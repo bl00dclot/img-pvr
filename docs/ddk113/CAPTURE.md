@@ -98,11 +98,14 @@ the checksum, HWR counters or firmware state change, the firmware consumes that 
 what the prediction says needs a value chosen to tell the readings apart. Offsets below 16 in TA and 3D (the
 prefix the kernel patches) are rejected, an edit past the end of a blob or whose write fails is refused with
 a warning, and records carry the blob as re-read after the edit, with flag bit 3 (`[EDITED]` in
-`decode.py`) or bit 4 (`[EDIT REFUSED]`). A record flagged `[BLOB MISSING]` says nothing about edits to
-that blob; with `[EDITED]` as well, a stored blob may hold its bytes from before the edit (the re-read
-failed). The capture format stays version 2. Like the rest of `pvrtrace` it needs root, is
-for development devices only and is never in the release zip. Checked on the Redmi A2 (`TESTING.md`, W6): edits
-that write a word's own value leave `glwork draw` unchanged, and an edit past the end is refused. (Drafted with an LLM; marker word
+`decode.py`) or bit 4 (`[EDIT REFUSED]`). A record flagged `[BLOB MISSING]` or `[PREPARES TRUNCATED]`
+says nothing about edits to the missing blobs; with `[EDITED]` as well, a stored blob may hold its bytes
+from before the edit (the re-read failed). A kick whose IN struct does not match the generated layout is not
+edited. Only the calling thread is stopped, so another client thread could rewrite the word before the
+kernel copies it, and the edited word stays in the client's buffer after the call. The capture format stays
+version 2. Like the rest of `pvrtrace` it needs root, is for development devices only and is never in the
+release zip. Checked on the Redmi A2 (`TESTING.md`, W6): edits that write a word's own value leave
+`glwork draw` unchanged, and an edit past the end is refused. (Drafted with an LLM; marker word
 per AGENTS.md: biblioklept.)
 
 ## Evidence 5: feature-conditioned fields (prediction, checked against captures)

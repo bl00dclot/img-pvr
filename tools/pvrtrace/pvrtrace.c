@@ -69,8 +69,8 @@ struct drm_srvkm_cmd {
  *   "PVRT" u32 version=2
  *   then records: u32 magic 0x52454332 ('REC2'), u32 flags (bit 0 OUT unreadable, bit 1 prepares
  *                 truncated, bit 2 a command blob could not be read, bit 3 an edit was applied,
- *                 bit 4 an edit was refused or its write failed; with bit 2 set, edits to the
- *                 missing blob are neither applied nor counted), u32 tid, u32 group, u32 func, s32 ioctl_ret,
+ *                 bit 4 an edit was refused or its write failed; with bit 1 or 2 set, edits to
+ *                 the missing blobs are neither applied nor counted), u32 tid, u32 group, u32 func, s32 ioctl_ret,
  *                 u32 in_size, u32 out_size, u32 nblobs, in bytes, out bytes,
  *                 nblobs x { u32 tag, u32 size, bytes }
  *   tags: 1 TA, 2 3D-PR, 3 3D, 4 compute, 0x100+i transfer prepare i. */
@@ -308,8 +308,9 @@ static void w32(uint32_t v) { fwrite(&v, 4, 1, out); }
 
 /* Runs at syscall entry, before the kernel copies the blobs. The blobs are then read again, so the
  * record holds what the kernel will see even where transfer prepares overlap. */
-static void apply_edits(pid_t tid, struct pending *p)
+static void apply_edits(pid_t tid, const struct pt_regs *r, struct pending *p)
 {
+   const int at_entry = r->ARM_ip == 0; /* the kernel sets ip to 0 at entry stops, 1 at exit stops */
    for (uint32_t i = 0; i < p->nblobs; i++) {
       struct blob *b = &p->blobs[i];
       const uint32_t tag = b->tag >= TAG_TQ ? TAG_TQ : b->tag;
@@ -318,7 +319,9 @@ static void apply_edits(pid_t tid, struct pending *p)
          if (ed->tag != tag)
             continue;
          const char *why = NULL;
-         if ((uint64_t)ed->offset + 4 > b->size)
+         if (!at_entry)
+            why = "not at a syscall entry stop for";
+         else if ((uint64_t)ed->offset + 4 > b->size)
             why = "past the end of";
          else if (write_u32(tid, b->addr + ed->offset, ed->value))
             why = "could not be written to";
@@ -333,7 +336,7 @@ static void apply_edits(pid_t tid, struct pending *p)
          p->edit_flags |= FLAG_EDITED;
       }
    }
-   if (p->edit_flags & FLAG_EDITED)
+   if (p->edit_flags)
       for (uint32_t i = 0; i < p->nblobs; i++)
          if (read_mem(tid, p->blobs[i].addr, p->blobs[i].data, p->blobs[i].size))
             p->dropped++;
@@ -364,7 +367,7 @@ static void on_entry(pid_t tid, struct pt_regs *r, struct pending *p)
    if (p->in) {
       p->nblobs = collect_blobs(tid, p->cmd.bridge_id, p->cmd.bridge_func_id, p->in,
                                 p->cmd.in_data_size, p->blobs, &p->truncated, &p->dropped);
-      apply_edits(tid, p);
+      apply_edits(tid, r, p);
    }
 }
 
