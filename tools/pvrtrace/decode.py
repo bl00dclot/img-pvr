@@ -14,7 +14,7 @@ import sys
 
 GROUPS = {1: "SRVCORE", 2: "SYNC", 6: "MM", 11: "DMABUF", 13: "CACHE", 128: "RGXTQ", 129: "RGXCMP",
           130: "RGXTA3D", 134: "RGXHWPERF"}
-TAGS = {1: "TA", 2: "3D-PR", 3: "3D", 4: "CDM"}
+TAGS = {1: "TA", 2: "3D-PR", 3: "3D", 4: "CDM", 5: "RCTX", 6: "CCTX"}
 
 
 def func_names():

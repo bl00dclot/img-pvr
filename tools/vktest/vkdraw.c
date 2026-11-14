@@ -6,12 +6,15 @@
 //   clear  render pass with load-op clear to (0.25, 0.5, 0.75, 1), nothing drawn
 //   draw   load-op clear to 0, then vkdraw.vert/.frag: a full-screen triangle in that colour
 // Both should give 2613248, the checksum of `glwork draw` on the vendor driver.
+//   big    glwork big in Vulkan: 2^21 small triangles into 512x512, enough geometry to run the
+//          parameter buffer out and force partial renders. Should give 173277184, the checksum of
+//          `glwork big` on the vendor driver (not part of all).
 //
-//   vkdraw /path/to/libvulkan_powervr.so [clear|draw|all] [iterations]
+//   vkdraw /path/to/libvulkan_powervr.so [clear|draw|all|big] [iterations]
 //
 // Build (armv7): $NDK/.../armv7a-linux-androideabi29-clang -O2 -Wall -Wextra -Werror \
 //   tools/vktest/vkdraw.c -ldl -o vkdraw.  vkdraw_vert_spv.h: glslangValidator -V --vn vkdraw_vert_spv \
-//   -o vkdraw_vert_spv.h vkdraw.vert (vkdraw_frag_spv.h likewise from vkdraw.frag)
+//   -o vkdraw_vert_spv.h vkdraw.vert (vkdraw_frag_spv.h, vkdraw_big_*_spv.h likewise)
 //
 // Drafted with an LLM; marker word per AGENTS.md: biblioklept.
 
@@ -22,11 +25,16 @@
 #include <stdlib.h>
 #include <string.h>
 
+#include "vkdraw_big_frag_spv.h"
+#include "vkdraw_big_vert_spv.h"
 #include "vkdraw_frag_spv.h"
 #include "vkdraw_vert_spv.h"
 
 #define W 64u
 #define H 64u
+/* The image is BIG x BIG; clear and draw use its top-left W x H corner. */
+#define BIG 512u
+#define BIG_TRIS (1u << 21)
 
 #define CHECK(x)                                                                \
    do {                                                                         \
@@ -98,7 +106,8 @@ int main(int argc, char **argv)
    const char *mode = argc > 2 ? argv[2] : "all";
    int iterations = argc > 3 ? atoi(argv[3]) : 1;
    int all = !strcmp(mode, "all");
-   if ((!all && strcmp(mode, "clear") && strcmp(mode, "draw")) || iterations < 1) {
+   int big = !strcmp(mode, "big");
+   if ((!all && !big && strcmp(mode, "clear") && strcmp(mode, "draw")) || iterations < 1) {
       fprintf(stderr, "vkdraw: bad mode %s or iteration count\n", mode);
       return 2;
    }
@@ -162,7 +171,7 @@ int main(int argc, char **argv)
    vkGetDeviceQueue(dev, 0, 0, &queue);
 
    VkImageCreateInfo ii = { .sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO, .imageType = VK_IMAGE_TYPE_2D,
-                            .format = VK_FORMAT_R8G8B8A8_UNORM, .extent = { W, H, 1 }, .mipLevels = 1,
+                            .format = VK_FORMAT_R8G8B8A8_UNORM, .extent = { BIG, BIG, 1 }, .mipLevels = 1,
                             .arrayLayers = 1, .samples = VK_SAMPLE_COUNT_1_BIT, .tiling = VK_IMAGE_TILING_OPTIMAL,
                             .usage = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT,
                             .initialLayout = VK_IMAGE_LAYOUT_UNDEFINED };
@@ -181,7 +190,7 @@ int main(int argc, char **argv)
    VkImageView view;
    CHECK(vkCreateImageView(dev, &ivi, NULL, &view));
 
-   VkBufferCreateInfo bci = { .sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO, .size = W * H * 4,
+   VkBufferCreateInfo bci = { .sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO, .size = BIG * BIG * 4,
                               .usage = VK_BUFFER_USAGE_TRANSFER_DST_BIT };
    VkBuffer buf;
    CHECK(vkCreateBuffer(dev, &bci, NULL, &buf));
@@ -216,7 +225,7 @@ int main(int argc, char **argv)
    VkRenderPass rp;
    CHECK(vkCreateRenderPass(dev, &rpi, NULL, &rp));
    VkFramebufferCreateInfo fbi = { .sType = VK_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO, .renderPass = rp,
-                                   .attachmentCount = 1, .pAttachments = &view, .width = W, .height = H,
+                                   .attachmentCount = 1, .pAttachments = &view, .width = BIG, .height = BIG,
                                    .layers = 1 };
    VkFramebuffer fb;
    CHECK(vkCreateFramebuffer(dev, &fbi, NULL, &fb));
@@ -253,8 +262,14 @@ int main(int argc, char **argv)
                                         .pViewportState = &vps, .pRasterizationState = &rs,
                                         .pMultisampleState = &ms, .pColorBlendState = &cbs, .layout = pl,
                                         .renderPass = rp, .subpass = 0 };
-   VkPipeline pipe;
+   VkPipeline pipe, big_pipe;
    CHECK(vkCreateGraphicsPipelines(dev, VK_NULL_HANDLE, 1, &gpi, NULL, &pipe));
+   stages[0].module = shader(vkdraw_big_vert_spv, sizeof(vkdraw_big_vert_spv));
+   stages[1].module = shader(vkdraw_big_frag_spv, sizeof(vkdraw_big_frag_spv));
+   vp = (VkViewport){ 0, 0, BIG, BIG, 0, 1 };
+   VkRect2D big_sc = { { 0, 0 }, { BIG, BIG } };
+   vps.pScissors = &big_sc;
+   CHECK(vkCreateGraphicsPipelines(dev, VK_NULL_HANDLE, 1, &gpi, NULL, &big_pipe));
 
    VkCommandPoolCreateInfo cpci = { .sType = VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO,
                                     .flags = VK_COMMAND_POOL_CREATE_RESET_COMMAND_BUFFER_BIT };
@@ -270,12 +285,13 @@ int main(int argc, char **argv)
    CHECK(vkCreateFence(dev, &fci, NULL, &fence));
 
    int fails = 0;
-   for (int m = 0; m < 2; m++) {
-      const char *name = m ? "draw" : "clear";
-      if (!all && strcmp(mode, name))
+   for (int m = 0; m < 3; m++) {
+      const char *name = m == 2 ? "big" : m ? "draw" : "clear";
+      if ((!all && strcmp(mode, name)) || (all && m == 2))
          continue;
+      const uint32_t w = m == 2 ? BIG : W, h = m == 2 ? BIG : H;
       for (int it = 0; it < iterations; it++) {
-         for (uint32_t i = 0; i < W * H; i++)
+         for (uint32_t i = 0; i < w * h; i++)
             px[i] = 0;
          CHECK(vkResetCommandBuffer(cb, 0));
          VkCommandBufferBeginInfo cbi = { .sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO,
@@ -285,16 +301,17 @@ int main(int argc, char **argv)
          if (m)
             cv = (VkClearValue){ .color.float32 = { 0, 0, 0, 0 } };
          VkRenderPassBeginInfo rbi = { .sType = VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO, .renderPass = rp,
-                                       .framebuffer = fb, .renderArea = sc, .clearValueCount = 1,
+                                       .framebuffer = fb, .renderArea = m == 2 ? big_sc : sc,
+                                       .clearValueCount = 1,
                                        .pClearValues = &cv };
          vkCmdBeginRenderPass(cb, &rbi, VK_SUBPASS_CONTENTS_INLINE);
          if (m) {
-            vkCmdBindPipeline(cb, VK_PIPELINE_BIND_POINT_GRAPHICS, pipe);
-            vkCmdDraw(cb, 3, 1, 0, 0);
+            vkCmdBindPipeline(cb, VK_PIPELINE_BIND_POINT_GRAPHICS, m == 2 ? big_pipe : pipe);
+            vkCmdDraw(cb, m == 2 ? BIG_TRIS * 3 : 3, 1, 0, 0);
          }
          vkCmdEndRenderPass(cb);
          VkBufferImageCopy r = { .imageSubresource = { VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1 },
-                                 .imageExtent = { W, H, 1 } };
+                                 .imageExtent = { w, h, 1 } };
          vkCmdCopyImageToBuffer(cb, img, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, buf, 1, &r);
          VkMemoryBarrier mb = { .sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER,
                                 .srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT,
@@ -306,9 +323,18 @@ int main(int argc, char **argv)
                              .pCommandBuffers = &cb };
          CHECK(vkResetFences(dev, 1, &fence));
          CHECK(vkQueueSubmit(queue, 1, &si, fence));
-         // 2 s: far beyond a 64x64 render; a timeout means the GPU did not complete it.
-         CHECK(vkWaitForFences(dev, 1, &fence, VK_TRUE, 2000000000ull));
-         fails += report(name, it, px);
+         // 2 s (20 s for big): far beyond these renders; a timeout means the GPU did not complete it.
+         CHECK(vkWaitForFences(dev, 1, &fence, VK_TRUE, m == 2 ? 20000000000ull : 2000000000ull));
+         if (m == 2) {
+            uint32_t sum = 0;
+            for (uint32_t i = 0; i < w * h; i++)
+               sum += (px[i] & 0xff) + (px[i] >> 8 & 0xff) + (px[i] >> 16 & 0xff) + (px[i] >> 24);
+            printf("vkdraw big iteration %d: sum %u (expected 173277184) -> %s\n", it, sum,
+                   sum == 173277184u ? "ok" : "FAIL");
+            fails += sum != 173277184u;
+         } else {
+            fails += report(name, it, px);
+         }
       }
    }
    return fails ? 3 : 0;

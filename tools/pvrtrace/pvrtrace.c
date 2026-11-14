@@ -73,7 +73,8 @@ struct drm_srvkm_cmd {
  *                 the missing blobs are neither applied nor counted), u32 tid, u32 group, u32 func, s32 ioctl_ret,
  *                 u32 in_size, u32 out_size, u32 nblobs, in bytes, out bytes,
  *                 nblobs x { u32 tag, u32 size, bytes }
- *   tags: 1 TA, 2 3D-PR, 3 3D, 4 compute, 0x100+i transfer prepare i. */
+ *   tags: 1 TA, 2 3D-PR, 3 3D, 4 compute, 5 render and 6 compute context static state,
+ *         0x100+i transfer prepare i. */
 
 static FILE *out;
 static unsigned long records, dropped_calls;
@@ -270,6 +271,16 @@ static uint32_t collect_blobs(pid_t pid, uint32_t group, uint32_t func, const ui
          return n;
       for (uint32_t i = 0; i < count; i++)
          add_blob(pid, blobs, &n, TAG_TQ + i, cmds[i], sizes[i], dropped);
+   } else if (group == GROUP_RGXTA3D && func == DDK113_BRIDGE_RGXTA3D_RGXCREATERENDERCONTEXT &&
+              in_size == sizeof(struct ddk113_in_rgxcreaterendercontext)) {
+      const struct ddk113_in_rgxcreaterendercontext *k = (const void *)in;
+      add_blob(pid, blobs, &n, 5, k->psStaticRenderContextState, k->ui32StaticRenderContextStateSize,
+               dropped);
+   } else if (group == GROUP_RGXCMP && func == DDK113_BRIDGE_RGXCMP_RGXCREATECOMPUTECONTEXT &&
+              in_size == sizeof(struct ddk113_in_rgxcreatecomputecontext)) {
+      const struct ddk113_in_rgxcreatecomputecontext *k = (const void *)in;
+      add_blob(pid, blobs, &n, 6, k->psStaticComputeContextState, k->ui32StaticComputeContextStateSize,
+               dropped);
    }
    return n;
 }
