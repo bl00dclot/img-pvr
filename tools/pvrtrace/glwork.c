@@ -4,6 +4,13 @@
 // kind of GPU work, so its client commands can be captured and compared with Mesa's for the same job.
 //
 //   glwork clear | draw | tex | blit | compute     (64x64 RGBA8 pbuffer-less FBO, 3 iterations)
+//   glwork depth | msaa | mrt | big                 (render scenes for TA/3D capture, 3 iterations)
+//     depth  RGBA8 + D24S8: depth cleared to 1.0, stencil to 0x55, GL_LESS depth test, stencil REPLACE 0x33;
+//            two full-screen triangles, z = 0.5 then z = -0.5, in different colours
+//     msaa   4x RGBA8 renderbuffer, the triangle, resolved into the single-sample FBO by glBlitFramebuffer
+//     mrt    3 RGBA8 attachments written with 3 constants; the checksum covers all three
+//     big    512x512, 2M small overlapping triangles in one draw, to exhaust the parameter buffer
+//   The second group is untested on the device; drafted with an LLM, marker word per AGENTS.md: biblioklept.
 //
 // Build (armv7): $NDK/.../armv7a-linux-androideabi29-clang -O2 -Wall tools/pvrtrace/glwork.c \
 //   -lEGL -lGLESv3 -o glwork
@@ -39,6 +46,116 @@ static GLuint prog(GLenum type0, const char *s0, GLenum type1, const char *s1)
    }
    glLinkProgram(p);
    return p;
+}
+
+#define BIG 512
+#define BIG_TRIS (1 << 21)
+
+static uint32_t readsum(GLenum attachment, int w, int h)
+{
+   static uint8_t px[BIG * BIG * 4];
+   glReadBuffer(attachment);
+   glReadPixels(0, 0, w, h, GL_RGBA, GL_UNSIGNED_BYTE, px);
+   uint32_t sum = 0;
+   for (int i = 0; i < w * h * 4; i++)
+      sum += px[i];
+   return sum;
+}
+
+/* The depth, msaa, mrt and big modes; returns -1 for any other mode. */
+static int scene(const char *mode, GLuint resolve_fbo)
+{
+   int depth = !strcmp(mode, "depth"), msaa = !strcmp(mode, "msaa"), mrt = !strcmp(mode, "mrt");
+   int big = !strcmp(mode, "big");
+   if (!depth && !msaa && !mrt && !big)
+      return -1;
+   int size = big ? BIG : W, colours = mrt ? 3 : 1;
+
+   GLuint fbo, rb[4];
+   glGenFramebuffers(1, &fbo);
+   glBindFramebuffer(GL_FRAMEBUFFER, fbo);
+   glGenRenderbuffers(colours + depth, rb);
+   for (int i = 0; i < colours; i++) {
+      glBindRenderbuffer(GL_RENDERBUFFER, rb[i]);
+      if (msaa)
+         glRenderbufferStorageMultisample(GL_RENDERBUFFER, 4, GL_RGBA8, size, size);
+      else
+         glRenderbufferStorage(GL_RENDERBUFFER, GL_RGBA8, size, size);
+      glFramebufferRenderbuffer(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0 + i, GL_RENDERBUFFER, rb[i]);
+   }
+   if (depth) {
+      glBindRenderbuffer(GL_RENDERBUFFER, rb[1]);
+      glRenderbufferStorage(GL_RENDERBUFFER, GL_DEPTH24_STENCIL8, size, size);
+      glFramebufferRenderbuffer(GL_FRAMEBUFFER, GL_DEPTH_STENCIL_ATTACHMENT, GL_RENDERBUFFER, rb[1]);
+   }
+   const GLenum bufs[3] = { GL_COLOR_ATTACHMENT0, GL_COLOR_ATTACHMENT1, GL_COLOR_ATTACHMENT2 };
+   glDrawBuffers(colours, bufs);
+   GLenum status = glCheckFramebufferStatus(GL_FRAMEBUFFER);
+   if (status != GL_FRAMEBUFFER_COMPLETE) {
+      fprintf(stderr, "glwork %s: framebuffer incomplete 0x%x\n", mode, status);
+      return 1;
+   }
+
+   const char *vs = "#version 300 es\nuniform float z;void main(){vec2 p=vec2((gl_VertexID<<1)&2,gl_VertexID&2);"
+                    "gl_Position=vec4(p*2.0-1.0,z,1);}";
+   const char *fs = "#version 300 es\nprecision highp float;uniform vec4 col;out vec4 o;void main(){o=col;}";
+   if (mrt)
+      fs = "#version 300 es\nprecision highp float;layout(location=0) out vec4 o0;layout(location=1) out vec4 o1;"
+           "layout(location=2) out vec4 o2;"
+           "void main(){o0=vec4(0.25,0.5,0.75,1);o1=vec4(1,0,1,1);o2=vec4(0,1,1,0);}";
+   if (big) {
+      /* Triangle t covers half of a 2x2-cell square at cell t % 4096 of a 64x64 grid of 8-pixel cells, so
+       * every pixel is covered, by 512 triangles per cell; its colour comes from t, so draw order shows. */
+      vs = "#version 300 es\nout vec4 c;void main(){int t=gl_VertexID/3,v=gl_VertexID-t*3,i=t&4095;"
+           "vec2 p=vec2(i&63,i>>6)/32.0-1.0+vec2(v==1?1.0/16.0:0.0,v==2?1.0/16.0:0.0);"
+           "c=vec4(float(t&255),float((t>>8)&255),float(t>>16),255.0)/255.0;gl_Position=vec4(p,0,1);}";
+      fs = "#version 300 es\nprecision highp float;in vec4 c;out vec4 o;void main(){o=c;}";
+   }
+   GLuint p = prog(GL_VERTEX_SHADER, vs, GL_FRAGMENT_SHADER, fs);
+   glUseProgram(p);
+   GLint zloc = glGetUniformLocation(p, "z"), cloc = glGetUniformLocation(p, "col");
+   glViewport(0, 0, size, size);
+
+   for (int it = 0; it < 3; it++) {
+      glBindFramebuffer(GL_FRAMEBUFFER, fbo);
+      glClearColor(0, 0, 0, 0);
+      if (depth) {
+         glClearDepthf(1.0f);
+         glClearStencil(0x55);
+         glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT | GL_STENCIL_BUFFER_BIT);
+         glEnable(GL_DEPTH_TEST);
+         glDepthFunc(GL_LESS);
+         glEnable(GL_STENCIL_TEST);
+         glStencilFunc(GL_ALWAYS, 0x33, 0xff);
+         glStencilOp(GL_KEEP, GL_KEEP, GL_REPLACE);
+         glUniform1f(zloc, 0.5f);
+         glUniform4f(cloc, 1.0f, 0.0f, 0.0f, 1.0f);
+         glDrawArrays(GL_TRIANGLES, 0, 3);
+         glUniform1f(zloc, -0.5f);
+         glUniform4f(cloc, 0.0f, 0.25f, 1.0f, 1.0f);
+         glDrawArrays(GL_TRIANGLES, 0, 3);
+      } else {
+         glClear(GL_COLOR_BUFFER_BIT);
+         if (msaa) {
+            glUniform1f(zloc, 0.0f);
+            glUniform4f(cloc, 0.25f, 0.5f, 0.75f, 1.0f);
+         }
+         glDrawArrays(GL_TRIANGLES, 0, big ? BIG_TRIS * 3 : 3);
+      }
+      if (msaa) {
+         glBindFramebuffer(GL_READ_FRAMEBUFFER, fbo);
+         glBindFramebuffer(GL_DRAW_FRAMEBUFFER, resolve_fbo);
+         glBlitFramebuffer(0, 0, W, H, 0, 0, W, H, GL_COLOR_BUFFER_BIT, GL_NEAREST);
+      }
+      glFinish();
+   }
+
+   glBindFramebuffer(GL_FRAMEBUFFER, msaa ? resolve_fbo : fbo);
+   uint32_t check = 0;
+   for (int i = 0; i < colours; i++)
+      check += readsum(GL_COLOR_ATTACHMENT0 + i, size, size);
+   printf("glwork %s: checksum %u, glGetError 0x%x\n", mode, check, glGetError());
+   return 0;
 }
 
 int main(int argc, char **argv)
@@ -98,6 +215,10 @@ int main(int argc, char **argv)
       glBufferData(GL_SHADER_STORAGE_BUFFER, 64 * 4, NULL, GL_DYNAMIC_COPY);
       glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 0, ssbo);
    }
+
+   int r = scene(mode, fbo[0]);
+   if (r >= 0)
+      return r;
 
    for (int it = 0; it < 3; it++) {
       if (!strcmp(mode, "clear")) {

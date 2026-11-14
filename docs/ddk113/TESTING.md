@@ -120,3 +120,10 @@ over the vendor GLES driver running `glwork draw`, with the game closed.
 
 Not yet done: an edit that changes a value (that is the W5 TA/3D decode work). Drafted with an LLM; marker
 word per AGENTS.md: biblioklept.
+
+### Render tools for L5 (W5a, not yet run)
+
+`tools/vktest/vkdraw` (render-pass clear, then a full-screen triangle; expected byte sum 2613248, the same as
+`glwork draw`) and the `glwork` modes `depth`, `msaa`, `mrt` and `big` (for TA/3D captures, `big` forcing a
+partial render) are built for armv7 but have not been run on the device. Drafted with an LLM; marker word per
+AGENTS.md: biblioklept.
