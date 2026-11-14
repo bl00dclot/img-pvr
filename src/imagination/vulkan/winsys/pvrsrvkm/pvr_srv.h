@@ -54,7 +54,7 @@
 #define PVR_SRV_VISIBILITY_TEST_HEAP_IDENT "VisTest"
 
 /* XCLIPSE: DDK 1.11 takes these addresses in every command instead of at firmware-known offsets,
- * and a PDS or USC address of 0 reads as "no program", so nothing sits at offset 0. DDK 1.13
+ * and a PDS or USC address of 0 reads as "no program", so on 1.11 nothing sits at offset 0. DDK 1.13
  * commands carry no such addresses (docs/ddk113/CAPTURE.md), so its firmware finds the programs at
  * fixed offsets in the heaps' reserved regions; these are upstream's 1.17 offsets. */
 #define FWIF_PDS_HEAP_TOTAL_BYTES 4096
