@@ -35,6 +35,7 @@
 #include "fw-api/pvr_rogue_fwif.h"
 #include "fw-api/pvr_rogue_fwif_rf.h"
 #include "fw-api/pvr_rogue_fwif_ddk111.h"
+#include "fw-api/pvr_rogue_fwif_ddk113.h"
 #include "pvr_csb.h"
 #include "pvr_job_render.h"
 #include "pvr_srv.h"
@@ -445,6 +446,9 @@ static void pvr_srv_render_ctx_fw_static_state_init(
    memset(static_state, 0, sizeof(*static_state));
 
    regs->vdm_context_state_base_addr = ws_static_state->vdm_ctx_state_base_addr;
+#if PVR_SRV_DDK == 113
+   regs->vdm_context_state_resume_addr = ws_static_state->vdm_ctx_state_resume_addr;
+#endif
    regs->ta_context_state_base_addr = ws_static_state->geom_ctx_state_base_addr;
 
    STATIC_ASSERT(ARRAY_SIZE(regs->ta_state) ==
@@ -466,19 +470,33 @@ static void pvr_srv_render_ctx_fw_static_state_init(
    }
 }
 
-/* XCLIPSE: the TA and 3D commands are the DDK 1.11 ones (fw-api/pvr_rogue_fwif_ddk111.h). */
+/* XCLIPSE: the TA and 3D commands are the DDK 1.11 ones (fw-api/pvr_rogue_fwif_ddk111.h), or the
+ * 1.13 ones (fw-api/pvr_rogue_fwif_ddk113.h, docs/ddk113/CAPTURE.md): 1.17's layouts without the
+ * registers this GPU lacks, with the HWRT data and PR buffers in a prefix the kernel fills, and
+ * the PDS and USC programs at the firmware's fixed heap offsets instead of in the command. */
+#if PVR_SRV_DDK == 113
+typedef struct ddk113_fwif_cmd_ta srv_fwif_cmd_ta;
+typedef struct ddk113_fwif_ta_regs srv_fwif_ta_regs;
+typedef struct ddk113_fwif_cmd_3d srv_fwif_cmd_3d;
+typedef struct ddk113_fwif_3d_regs srv_fwif_3d_regs;
+#else
+typedef struct ddk111_fwif_cmd_ta srv_fwif_cmd_ta;
+typedef struct ddk111_fwif_ta_regs srv_fwif_ta_regs;
+typedef struct ddk111_fwif_cmd_3d srv_fwif_cmd_3d;
+typedef struct ddk111_fwif_3d_regs srv_fwif_3d_regs;
+#endif
 
 /* Not identified; the vendor sets it on every TA kick. */
 #define DDK111_FWIF_TAFLAGS_UNKNOWN_20 (1U << 20)
 
 static uint32_t
-pvr_srv_geometry_cmd_stream_load(struct ddk111_fwif_cmd_ta *const cmd,
+pvr_srv_geometry_cmd_stream_load(srv_fwif_cmd_ta *const cmd,
                                  const uint8_t *const stream,
                                  const uint32_t stream_len,
                                  const struct pvr_device_info *const dev_info)
 {
    const uint32_t *stream_ptr = (const uint32_t *)stream;
-   struct ddk111_fwif_ta_regs *const regs = &cmd->regs;
+   srv_fwif_ta_regs *const regs = &cmd->regs;
    uint32_t main_stream_len =
       pvr_csb_unpack((const uint64_t *)stream_ptr, KMD_STREAM_HDR).length;
 
@@ -499,6 +517,9 @@ pvr_srv_geometry_cmd_stream_load(struct ddk111_fwif_cmd_ta *const cmd,
    regs->vdm_context_resume_task0_size = *stream_ptr;
    stream_ptr += pvr_cmd_length(VDMCTRL_PDS_STATE0);
 
+#if PVR_SRV_DDK == 113
+   regs->view_idx = *stream_ptr;
+#endif
    /* view_idx: 1.11 has no multiview. */
    stream_ptr++;
 
@@ -509,7 +530,7 @@ pvr_srv_geometry_cmd_stream_load(struct ddk111_fwif_cmd_ta *const cmd,
 }
 
 static void pvr_srv_geometry_cmd_ext_stream_load(
-   struct ddk111_fwif_cmd_ta *const cmd,
+   srv_fwif_cmd_ta *const cmd,
    const uint8_t *const stream,
    const uint32_t stream_len,
    const uint32_t ext_stream_offset,
@@ -517,7 +538,7 @@ static void pvr_srv_geometry_cmd_ext_stream_load(
 {
    const uint32_t *ext_stream_ptr =
       (const uint32_t *)((uint8_t *)stream + ext_stream_offset);
-   struct ddk111_fwif_ta_regs *const regs = &cmd->regs;
+   srv_fwif_ta_regs *const regs = &cmd->regs;
 
    struct ROGUE_KMD_STREAM_EXTHDR_GEOM0 header0;
 
@@ -536,7 +557,7 @@ static void pvr_srv_geometry_cmd_ext_stream_load(
 static void
 srv_geometry_cmd_init(const struct pvr_winsys_render_submit_info *submit_info,
                       const struct pvr_srv_sync_prim *sync_prim,
-                      struct ddk111_fwif_cmd_ta *cmd,
+                      srv_fwif_cmd_ta *cmd,
                       const struct pvr_srv_winsys *srv_ws,
                       uint32_t hw_rt_data,
                       const struct pvr_device_info *const dev_info)
@@ -546,10 +567,15 @@ srv_geometry_cmd_init(const struct pvr_winsys_render_submit_info *submit_info,
 
    memset(cmd, 0, sizeof(*cmd));
 
-   cmd->regs.tpu_yuv_csc_table = pvr_srv_ddk111_yuv_csc_table(srv_ws);
    cmd->regs.pds_ctrl = DDK111_FWIF_TA_PDS_CTRL;
+#if PVR_SRV_DDK != 113
+   cmd->regs.tpu_yuv_csc_table = pvr_srv_ddk111_yuv_csc_table(srv_ws);
    cmd->regs.vdm_sync_pds_data = pvr_srv_ddk111_vdm_sync_pds_data(srv_ws);
    cmd->hw_rt_data = hw_rt_data;
+#else
+   (void)srv_ws;
+   (void)hw_rt_data;
+#endif
    cmd->flags = DDK111_FWIF_TAFLAGS_UNKNOWN_20;
 
    ext_stream_offset = pvr_srv_geometry_cmd_stream_load(cmd,
@@ -577,13 +603,13 @@ srv_geometry_cmd_init(const struct pvr_winsys_render_submit_info *submit_info,
 }
 
 static uint32_t
-pvr_srv_fragment_cmd_stream_load(struct ddk111_fwif_cmd_3d *const cmd,
+pvr_srv_fragment_cmd_stream_load(srv_fwif_cmd_3d *const cmd,
                                  const uint8_t *const stream,
                                  const uint32_t stream_len,
                                  const struct pvr_device_info *const dev_info)
 {
    const uint32_t *stream_ptr = (const uint32_t *)stream;
-   struct ddk111_fwif_3d_regs *const regs = &cmd->regs;
+   srv_fwif_3d_regs *const regs = &cmd->regs;
    uint32_t main_stream_len =
       pvr_csb_unpack((const uint64_t *)stream_ptr, KMD_STREAM_HDR).length;
 
@@ -661,6 +687,9 @@ pvr_srv_fragment_cmd_stream_load(struct ddk111_fwif_cmd_3d *const cmd,
    if (PVR_HAS_FEATURE(dev_info, cluster_grouping))
       stream_ptr++;
 
+#if PVR_SRV_DDK == 113
+   regs->view_idx = *stream_ptr;
+#endif
    /* view_idx: 1.11 has no multiview. */
    stream_ptr++;
 
@@ -673,12 +702,20 @@ pvr_srv_fragment_cmd_stream_load(struct ddk111_fwif_cmd_3d *const cmd,
    if (PVR_HAS_FEATURE(dev_info, zls_subtile))
       stream_ptr += pvr_cmd_length(CR_ISP_ZLS_PIXELS);
 
+#if PVR_SRV_DDK == 113
+   cmd->zls_stride = *stream_ptr;
+   stream_ptr++;
+
+   cmd->sls_stride = *stream_ptr;
+   stream_ptr++;
+#else
    /* zls_stride and sls_stride, taken to be the two words after the PR buffers. */
    cmd->unknown_140[0] = *stream_ptr;
    stream_ptr++;
 
    cmd->unknown_140[1] = *stream_ptr;
    stream_ptr++;
+#endif
 
    if (PVR_HAS_FEATURE(dev_info, gpu_multicore_support))
       stream_ptr++;
@@ -690,7 +727,7 @@ pvr_srv_fragment_cmd_stream_load(struct ddk111_fwif_cmd_3d *const cmd,
 }
 
 static void pvr_srv_fragment_cmd_ext_stream_load(
-   struct ddk111_fwif_cmd_3d *const cmd,
+   srv_fwif_cmd_3d *const cmd,
    const uint8_t *const stream,
    const uint32_t stream_len,
    const uint32_t ext_stream_offset,
@@ -698,7 +735,7 @@ static void pvr_srv_fragment_cmd_ext_stream_load(
 {
    const uint32_t *ext_stream_ptr =
       (const uint32_t *)((uint8_t *)stream + ext_stream_offset);
-   struct ddk111_fwif_3d_regs *const regs = &cmd->regs;
+   srv_fwif_3d_regs *const regs = &cmd->regs;
 
    struct ROGUE_KMD_STREAM_EXTHDR_FRAG0 header0;
 
@@ -714,7 +751,7 @@ static void pvr_srv_fragment_cmd_ext_stream_load(
    assert((const uint8_t *)ext_stream_ptr - stream == stream_len);
 }
 
-static void srv_fragment_cmd_init(struct ddk111_fwif_cmd_3d *cmd,
+static void srv_fragment_cmd_init(srv_fwif_cmd_3d *cmd,
                                   const struct pvr_winsys_fragment_state *state,
                                   const struct pvr_srv_winsys *srv_ws,
                                   uint32_t hw_rt_data,
@@ -724,9 +761,14 @@ static void srv_fragment_cmd_init(struct ddk111_fwif_cmd_3d *cmd,
 
    memset(cmd, 0, sizeof(*cmd));
 
+#if PVR_SRV_DDK != 113
    cmd->regs.tpu_yuv_csc_table = pvr_srv_ddk111_yuv_csc_table(srv_ws);
    cmd->regs.event_pixel_pds_code = pvr_srv_ddk111_eot_pds_code(srv_ws);
    cmd->hw_rt_data = hw_rt_data;
+#else
+   (void)srv_ws;
+   (void)hw_rt_data;
+#endif
 
    ext_stream_offset = pvr_srv_fragment_cmd_stream_load(cmd,
                                                         state->fw_stream,
@@ -767,8 +809,6 @@ VkResult PVR_PER_ARCH(srv_winsys_render_submit)(
    struct vk_sync *signal_sync_geom,
    struct vk_sync *signal_sync_frag)
 {
-   PVR_SRV_DDK113_REFUSE_UNCONFIRMED_SUBMIT("TA/3D");
-
    const struct pvr_srv_winsys_rt_dataset *srv_rt_dataset =
       to_pvr_srv_winsys_rt_dataset(submit_info->rt_dataset);
    struct pvr_srv_sync_prim *sync_prim =
@@ -784,9 +824,9 @@ VkResult PVR_PER_ARCH(srv_winsys_render_submit)(
 
    const uint32_t hw_rt_data = pvr_srv_rgx_hwrt_data_fw_addr(rt_data_handle);
 
-   struct ddk111_fwif_cmd_ta geom_cmd;
-   struct ddk111_fwif_cmd_3d frag_cmd = { 0 };
-   struct ddk111_fwif_cmd_3d pr_cmd = { 0 };
+   srv_fwif_cmd_ta geom_cmd;
+   srv_fwif_cmd_3d frag_cmd = { 0 };
+   srv_fwif_cmd_3d pr_cmd = { 0 };
 
    uint8_t *frag_cmd_ptr = NULL;
    uint32_t frag_cmd_size = 0;
@@ -869,9 +909,12 @@ VkResult PVR_PER_ARCH(srv_winsys_render_submit)(
    /* The fw writes this fence when the TA runs out of memory, and the PR
     * command waits for it to reach the PR fence value given to the kick
     * below. With the pre-kick value the partial render never starts and the
-    * TA stalls until HWR.
+    * TA stalls until HWR. 1.13 keeps the pre-kick value, as the vendor and
+    * upstream's 1.17 winsys send (docs/ddk113/CAPTURE.md, TA).
     */
+#if PVR_SRV_DDK != 113
    geom_cmd.partial_render_ta_3d_fence.value = geom_sync_update_value;
+#endif
 
    if (submit_info->has_fragment_job) {
       frag_sync_update_count = 1;

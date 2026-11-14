@@ -186,6 +186,11 @@ enum pvr_winsys_ctx_priority {
    PVR_WINSYS_CTX_PRIORITY_HIGH,
 };
 
+/* XCLIPSE: the VDM context state buffer holds the state (ROGUE_LLS_VDM_CONTEXT_RESUME_BUFFER_SIZE,
+ * 92 bytes, padded) and then a resume region, laid out as the DDK 1.13 vendor driver does. */
+#define PVR_VDM_CTX_RESUME_OFFSET 0x60U
+#define PVR_VDM_CTX_RESUME_SIZE 0x40U
+
 struct pvr_winsys_render_ctx_create_info {
    enum pvr_winsys_ctx_priority priority;
    pvr_dev_addr_t vdm_callstack_addr;
@@ -193,6 +198,10 @@ struct pvr_winsys_render_ctx_create_info {
    union {
       struct pvr_rogue_winsys_render_ctx_static_state {
          uint64_t vdm_ctx_state_base_addr;
+         /* XCLIPSE: a second region of the VDM state buffer, PVR_VDM_CTX_RESUME_OFFSET bytes in.
+          * DDK 1.13 takes it as vdm_context_state_resume_addr (the vendor sends its own buffer's
+          * base + 0x60); 1.17 ignores that field. */
+         uint64_t vdm_ctx_state_resume_addr;
          uint64_t geom_ctx_state_base_addr;
 
          struct {
@@ -217,6 +226,10 @@ struct pvr_winsys_compute_ctx_create_info {
 
    union {
       struct pvr_rogue_winsys_compute_ctx_static_state {
+         /* XCLIPSE: CR_CDM_CONTEXT_STATE_BASE. DDK 1.13 takes it at context creation, not in
+          * each compute command. */
+         uint64_t cdm_ctx_state_base_addr;
+
          uint64_t cdm_ctx_store_pds0;
          uint64_t cdm_ctx_store_pds0_b;
          uint32_t cdm_ctx_store_pds1;

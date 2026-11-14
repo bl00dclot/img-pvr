@@ -662,9 +662,11 @@ static VkResult pvr_render_ctx_switch_init(struct pvr_device *device,
    VkResult result;
    uint32_t i;
 
+   /* XCLIPSE: room for the VDM resume region after the state (pvr_winsys.h). */
+   STATIC_ASSERT(PVR_VDM_CTX_RESUME_OFFSET >= ROGUE_LLS_VDM_CONTEXT_RESUME_BUFFER_SIZE);
    result = pvr_bo_alloc(device,
                          device->heaps.general_heap,
-                         ROGUE_LLS_VDM_CONTEXT_RESUME_BUFFER_SIZE,
+                         PVR_VDM_CTX_RESUME_OFFSET + PVR_VDM_CTX_RESUME_SIZE,
                          ROGUE_LLS_VDM_CONTEXT_RESUME_BUFFER_ALIGNMENT,
                          vdm_state_bo_flags,
                          &ctx_switch->vdm_state_bo);
@@ -779,6 +781,8 @@ static void pvr_render_ctx_ws_static_state_init(
    pvr_csb_pack (q_dst, CR_VDM_CONTEXT_STATE_BASE, base) {
       base.addr = ctx->ctx_switch.vdm_state_bo->vma->dev_addr;
    }
+   static_state->vdm_ctx_state_resume_addr =
+      ctx->ctx_switch.vdm_state_bo->vma->dev_addr.addr + PVR_VDM_CTX_RESUME_OFFSET;
 
    q_dst = &static_state->geom_ctx_state_base_addr;
    pvr_csb_pack (q_dst, CR_TA_CONTEXT_STATE_BASE, base) {
@@ -994,6 +998,12 @@ static void pvr_compute_ctx_ws_static_state_init(
    struct PVR_PER_ARCH(winsys_compute_ctx_static_state) *const static_state)
 {
    const struct pvr_compute_ctx_switch *const ctx_switch = &ctx->ctx_switch;
+
+   pvr_csb_pack (&static_state->cdm_ctx_state_base_addr,
+                 CR_CDM_CONTEXT_STATE_BASE,
+                 state) {
+      state.addr = ctx_switch->compute_state_bo->vma->dev_addr;
+   }
 
    /* CR_CDM_CONTEXT_... use state store program info. */
 

@@ -980,6 +980,7 @@ pvr_srv_rgx_create_compute_context(int fd,
                                    void *priv_data,
                                    uint32_t static_compute_context_state_size,
                                    uint8_t *static_compute_context_state,
+                                   uint64_t cdm_context_state_base,
                                    uint32_t packed_ccb_size,
                                    uint32_t context_flags,
                                    uint64_t robustness_address,
@@ -988,6 +989,8 @@ pvr_srv_rgx_create_compute_context(int fd,
 {
    const struct rogue_fwif_static_computecontext_state *state117 =
       (const void *)static_compute_context_state;
+   /* Left at 0 here as in v1.0.0; 1.13 needs it (docs/ddk113/TESTING.md), 1.11 is untested. */
+   (void)cdm_context_state_base;
    struct ddk111_fwif_static_computecontext_state state = {
       .robustness_address = robustness_address,
    };

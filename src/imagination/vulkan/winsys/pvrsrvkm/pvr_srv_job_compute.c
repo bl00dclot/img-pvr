@@ -97,6 +97,7 @@ VkResult pvr_srv_winsys_compute_ctx_create(
       srv_ws->server_memctx_data,
       sizeof(static_state),
       (uint8_t *)&static_state,
+      rogue_state->cdm_ctx_state_base_addr,
       0U,
       RGX_CONTEXT_FLAG_DISABLESLR,
       0U,

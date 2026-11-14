@@ -54,14 +54,21 @@
 #define PVR_SRV_VISIBILITY_TEST_HEAP_IDENT "VisTest"
 
 /* XCLIPSE: DDK 1.11 takes these addresses in every command instead of at firmware-known offsets,
- * and a PDS or USC address of 0 reads as "no program", so nothing sits at offset 0. */
+ * and a PDS or USC address of 0 reads as "no program", so nothing sits at offset 0. DDK 1.13
+ * commands carry no such addresses (docs/ddk113/CAPTURE.md), so its firmware finds the programs at
+ * fixed offsets in the heaps' reserved regions; these are upstream's 1.17 offsets. */
 #define FWIF_PDS_HEAP_TOTAL_BYTES 4096
-#define FWIF_PDS_HEAP_VDM_SYNC_OFFSET_BYTES 256
 #define FWIF_PDS_HEAP_EOT_OFFSET_BYTES 128
 #define FWIF_GENERAL_HEAP_TOTAL_BYTES 4096
 #define FWIF_USC_HEAP_TOTAL_BYTES 4096
-#define FWIF_USC_HEAP_VDM_SYNC_OFFSET_BYTES 256
 #define FWIF_GENERAL_HEAP_YUV_CSC_OFFSET_BYTES 128U
+#if PVR_SRV_DDK == 113
+#define FWIF_PDS_HEAP_VDM_SYNC_OFFSET_BYTES 0
+#define FWIF_USC_HEAP_VDM_SYNC_OFFSET_BYTES 0
+#else
+#define FWIF_PDS_HEAP_VDM_SYNC_OFFSET_BYTES 256
+#define FWIF_USC_HEAP_VDM_SYNC_OFFSET_BYTES 256
+#endif
 
 /*******************************************
     structure definitions
@@ -144,23 +151,8 @@ static inline uint64_t pvr_srv_ddk111_yuv_csc_table(const struct pvr_srv_winsys 
 VkResult pvr_srv_sync_get_presignaled_sync(struct pvr_device *device,
                                            struct pvr_srv_sync **out_sync);
 
-/* DDK 1.13: the client kick command layouts (TA, 3D, transfer, compute) are not confirmed yet
- * (docs/ddk113/CAPTURE.md). Until they are, a 1.13 build refuses to submit GPU work instead of
- * sending the firmware a guessed command. Expands to an early return in the submit functions. */
 #if !defined(PVR_SRV_DDK) || (PVR_SRV_DDK != 111 && PVR_SRV_DDK != 113)
 #error "PVR_SRV_DDK must be 111 or 113 (meson option imagination-srv-ddk)"
-#endif
-
-#if PVR_SRV_DDK == 113
-#define PVR_SRV_DDK113_REFUSE_UNCONFIRMED_SUBMIT(what)                                    \
-   do {                                                                                  \
-      mesa_loge("pvrsrvkm DDK 1.13: the %s command layout is not confirmed yet, "        \
-                "nothing submitted (docs/ddk113/CAPTURE.md)",                            \
-                what);                                                                   \
-      return vk_error(NULL, VK_ERROR_DEVICE_LOST);                                       \
-   } while (0)
-#else
-#define PVR_SRV_DDK113_REFUSE_UNCONFIRMED_SUBMIT(what) (void)0
 #endif
 
 #endif /* PVR_SRV_H */

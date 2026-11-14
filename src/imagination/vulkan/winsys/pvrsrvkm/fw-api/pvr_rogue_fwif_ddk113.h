@@ -29,7 +29,7 @@
  *
  * The client kick commands (TA, 3D, transfer, compute) are never seen by the kernel: their 1.13
  * layouts come from captures of the vendor driver (docs/ddk113/CAPTURE.md), checked against the
- * sizes in the vendor alignment array. Transfer and compute are defined so far.
+ * sizes in the vendor alignment array.
  */
 
 #ifndef PVR_ROGUE_FWIF_DDK113_H
@@ -171,5 +171,105 @@ static_assert(offsetof(struct ddk113_fwif_cmd_compute, regs) == 0, "CMD_COMPUTE 
 static_assert(offsetof(struct ddk113_fwif_cmd_compute, regs.tpu) == 0x10, "CMD_COMPUTE tpu");
 static_assert(offsetof(struct ddk113_fwif_cmd_compute, cdm_resume_pds1) == 0x14,
               "CMD_COMPUTE cdm_resume_pds1");
+
+/* The 16-byte prefix of the TA and 3D commands (CMDTA3D_SHARED): the kernel writes the HWRT data
+ * and the two PR buffer addresses (ZS, MSAA scratch) itself; the client sends zeros, as the
+ * vendor does. */
+struct ddk113_fwif_cmd_ta_3d_shared {
+   uint32_t hw_rt_data;
+   uint32_t pr_buffers[2];
+   uint32_t padding;
+};
+
+/* RGXFWIF_TAREGISTERS as the vendor fills it (docs/ddk113/CAPTURE.md, TA): 1.17's order without
+ * the draw-indirect, task3 and coefficient-free registers the GE8320 lacks. */
+struct ddk113_fwif_ta_regs {
+   uint64_t vdm_ctrl_stream_base;
+   uint64_t tpu_border_colour_table;
+   uint32_t ppp_ctrl;
+   uint32_t te_psg;
+   uint32_t tpu;
+   uint32_t vdm_context_resume_task0_size;
+   /* The vendor sends 0x9300 (DDK111_FWIF_TA_PDS_CTRL) on every kick. */
+   uint32_t pds_ctrl;
+   uint32_t view_idx;
+};
+
+/* RGXFWIF_CMDTA */
+struct ddk113_fwif_cmd_ta {
+   struct ddk113_fwif_cmd_ta_3d_shared cmd_shared;
+   struct ddk113_fwif_ta_regs regs;
+   /* FIRSTKICK | LASTKICK and bit 20, as on 1.11. */
+   uint32_t flags;
+   /* Zero in every vendor kick captured. */
+   uint32_t unknown_3c[2];
+   /* The PR fence UFO the firmware writes when the TA runs out of memory: the address the
+    * kick's PR fence names, with the sync value before the kick (one less than the PR fence
+    * value), as the vendor and upstream's 1.17 winsys send. */
+   struct {
+      uint32_t ufo_addr;
+      uint32_t value;
+   } partial_render_ta_3d_fence;
+   uint32_t padding;
+};
+
+/* RGXFWIF_3DREGISTERS as the vendor fills it (docs/ddk113/CAPTURE.md, 3D): 1.17's order with 4
+ * clear registers and 2 PBE words per target, without the registers for features the GE8320
+ * lacks. */
+struct ddk113_fwif_3d_regs {
+   uint32_t usc_pixel_output_ctrl;
+   uint32_t usc_clear_register[4];
+   uint32_t isp_bgobjdepth;
+   uint32_t isp_bgobjvals;
+   uint32_t isp_aa;
+   uint32_t isp_ctl;
+   uint32_t tpu;
+   uint32_t event_pixel_pds_info;
+   uint32_t view_idx;
+   uint32_t event_pixel_pds_data;
+   /* Zero in every vendor kick captured (1.17 has isp_oclqry_stride around here). */
+   uint32_t unknown_44;
+   uint64_t isp_scissor_base;
+   uint64_t isp_dbias_base;
+   uint64_t isp_oclqry_base;
+   uint64_t isp_zlsctl;
+   uint64_t isp_zload_store_base;
+   uint64_t isp_stencil_load_store_base;
+   uint64_t pbe_word[8][2];
+   uint64_t tpu_border_colour_table;
+   uint64_t pds_bgnd[3];
+   uint64_t pds_pr_bgnd[3];
+};
+
+/* RGXFWIF_CMD3D */
+struct ddk113_fwif_cmd_3d {
+   struct ddk113_fwif_cmd_ta_3d_shared cmd_shared;
+   struct ddk113_fwif_3d_regs regs;
+   uint32_t flags;
+   uint32_t zls_stride;
+   uint32_t sls_stride;
+   uint32_t padding;
+};
+
+static_assert(sizeof(struct ddk113_fwif_cmd_ta) == DDK113_FWIF_CMDTA_SIZE, "RGXFWIF_CMDTA size");
+static_assert(offsetof(struct ddk113_fwif_cmd_ta, regs) == DDK113_FWIF_CMDTA_REGS_OFFSET,
+              "CMDTA sGeomRegs");
+static_assert(offsetof(struct ddk113_fwif_cmd_ta, regs.ppp_ctrl) == 0x20, "CMDTA ppp_ctrl");
+static_assert(offsetof(struct ddk113_fwif_cmd_ta, flags) == 0x38, "CMDTA flags");
+static_assert(offsetof(struct ddk113_fwif_cmd_ta, partial_render_ta_3d_fence) == 0x44,
+              "CMDTA partial_render_ta_3d_fence");
+static_assert(sizeof(struct ddk113_fwif_cmd_3d) == DDK113_FWIF_CMD3D_SIZE, "RGXFWIF_CMD3D size");
+static_assert(offsetof(struct ddk113_fwif_cmd_3d, regs) == DDK113_FWIF_CMD3D_REGS_OFFSET,
+              "CMD3D s3DRegs");
+static_assert(offsetof(struct ddk113_fwif_cmd_3d, regs.isp_bgobjdepth) == 0x24, "3D isp_bgobjdepth");
+static_assert(offsetof(struct ddk113_fwif_cmd_3d, regs.event_pixel_pds_data) == 0x40,
+              "3D event_pixel_pds_data");
+static_assert(offsetof(struct ddk113_fwif_cmd_3d, regs.isp_scissor_base) == 0x48, "3D isp_scissor_base");
+static_assert(offsetof(struct ddk113_fwif_cmd_3d, regs.pbe_word) == 0x78, "3D pbe_word");
+static_assert(offsetof(struct ddk113_fwif_cmd_3d, regs.tpu_border_colour_table) == 0xf8,
+              "3D tpu_border_colour_table");
+static_assert(offsetof(struct ddk113_fwif_cmd_3d, regs.pds_bgnd) == 0x100, "3D pds_bgnd");
+static_assert(offsetof(struct ddk113_fwif_cmd_3d, regs.pds_pr_bgnd) == 0x118, "3D pds_pr_bgnd");
+static_assert(offsetof(struct ddk113_fwif_cmd_3d, flags) == 0x130, "3D flags");
 
 #endif /* PVR_ROGUE_FWIF_DDK113_H */

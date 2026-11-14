@@ -994,6 +994,7 @@ pvr_srv_rgx_create_compute_context(int fd,
                                    void *priv_data,
                                    uint32_t static_compute_context_state_size,
                                    uint8_t *static_compute_context_state,
+                                   uint64_t cdm_context_state_base,
                                    uint32_t packed_ccb_size,
                                    uint32_t context_flags,
                                    uint64_t robustness_address,
@@ -1002,7 +1003,12 @@ pvr_srv_rgx_create_compute_context(int fd,
 {
    const struct rogue_fwif_static_computecontext_state *state117 =
       (const void *)static_compute_context_state;
-   struct ddk113_fwif_static_computecontext_state state = { 0 };
+   /* The context state base, where a context store writes and a resume reads: 1.13 takes it here
+    * (the vendor sends it), 1.17 in each compute command. Left at 0, a preempted compute job's
+    * store would write near address 0. */
+   struct ddk113_fwif_static_computecontext_state state = {
+      .ctx_switch_regs.cdm_context_state_base_addr = cdm_context_state_base,
+   };
 
    assert(static_compute_context_state_size == sizeof(*state117));
    state.ctx_switch_regs.cdm_context_pds0 = state117->ctx_switch_regs.cdm_context_pds0;
@@ -1366,9 +1372,9 @@ pvr_srv_rgx_create_render_context(int fd,
          regs117->ta_state[i].vdm_context_resume_task2;
    }
 
-   /* Mesa asks for no limit with UINT_MAX. On 1.11 the firmware took that as a few ms and
-    * killed long renders (GUILTY_OVERRUNING); 0 means no deadline there. Kept for 1.13 until
-    * measured otherwise (docs/ddk113/TESTING.md). */
+   /* Mesa asks for no limit with UINT32_MAX, which 1.13 takes as no limit too: the vendor sends
+    * 0xffffffff for both. Mapping it to 0, as the 1.11 winsys must, made 1.13 count a deadline
+    * overrun (GUILTY_OVERRUNING) on nearly every 3D job of the probe (docs/ddk113/TESTING.md). */
    struct ddk113_in_rgxcreaterendercontext in = {
       .ui32Priority = priority,
       .sVDMCallStackAddr = vdm_callstack_addr.addr,
@@ -1380,8 +1386,8 @@ pvr_srv_rgx_create_render_context(int fd,
       .ui32PackedCCBSizeU8888 = ddk113_ccb_sizes(packed_ccb_size, 2),
       .ui32ContextFlags = context_flags,
       .ui64RobustnessAddress = robustness_address,
-      .ui32MaxTADeadlineMS = max_geom_deadline_ms == UINT32_MAX ? 0 : max_geom_deadline_ms,
-      .ui32Max3DDeadlineMS = max_frag_deadline_ms == UINT32_MAX ? 0 : max_frag_deadline_ms,
+      .ui32MaxTADeadlineMS = max_geom_deadline_ms,
+      .ui32Max3DDeadlineMS = max_frag_deadline_ms,
    };
    struct ddk113_out_rgxcreaterendercontext out = {
       .eError = PVR_SRV_ERROR_BRIDGE_CALL_FAILED,
@@ -1473,8 +1479,6 @@ VkResult pvr_srv_rgx_kick_render2(int fd,
                                   uint32_t num_mrts,
                                   uint64_t deadline)
 {
-   PVR_SRV_DDK113_REFUSE_UNCONFIRMED_SUBMIT("TA/3D");
-
    VkResult vk_result = VK_SUCCESS;
    uint64_t *ta_fence_blocks =
       widen(client_geom_fence_sync_prim_block, client_geom_fence_count);
