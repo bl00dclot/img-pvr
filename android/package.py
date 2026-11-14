@@ -66,11 +66,13 @@ def main():
     commit = git('rev-parse', '--short', 'HEAD')
     suffix = '-' + commit if commit else ''
     bits = '32-bit' if arch == 'armv7' else '64-bit'
+    ddk = os.environ.get('PVR_DDK', '1.11')
+    ddk_suffix = '' if ddk == '1.11' else '-ddk' + ddk.replace('.', '')
 
     meta = {
         'schemaVersion': 1,
-        'name': 'PowerVR Rogue (DDK 1.11) (Mesa %s%s)' % (mesa_version, ' ' + commit if commit else ''),
-        'description': 'Mesa PowerVR Vulkan for Rogue GPUs on the DDK 1.11 kernel driver, %s.' % bits,
+        'name': 'PowerVR Rogue (DDK %s) (Mesa %s%s)' % (ddk, mesa_version, ' ' + commit if commit else ''),
+        'description': 'Mesa PowerVR Vulkan for Rogue GPUs on the DDK %s kernel driver, %s.' % (ddk, bits),
         'author': 'JimVulkan',
         'packageVersion': '1',
         'vendor': 'Mesa',
@@ -80,7 +82,7 @@ def main():
     }
 
     os.makedirs(out_dir, exist_ok=True)
-    zip_path = os.path.join(out_dir, 'img-pvr-%s%s-%s.zip' % (mesa_version, suffix, arch))
+    zip_path = os.path.join(out_dir, 'img-pvr-%s%s-%s%s.zip' % (mesa_version, suffix, arch, ddk_suffix))
     with zipfile.ZipFile(zip_path, 'w', zipfile.ZIP_DEFLATED) as z:
         z.writestr('meta.json', json.dumps(meta, indent=2) + '\n')
         z.write(lib, LIB)

@@ -15,3 +15,12 @@ One entry per change, newest last. Every entry names its evidence. Every commit 
     clang.
   - IDs match `ABI.md`: `KICKTA3D2`=13, `KICKCDM2`=6, `PHYSMEMEXPORTDMABUF`=1, `GETMULTICOREINFO`=12.
   - Not yet used by any code.
+- **P1: reproducible build.**
+  - `docker/Dockerfile` uses Debian trixie pinned by digest. `scripts/docker-build.sh` mounts the NDK
+    read-only.
+  - The new meson option `imagination-srv-ddk` (`1.11` default, or `1.13`) selects `pvr_srv_bridge.c` or
+    `pvr_srv_bridge_ddk113.c` and defines `PVR_SRV_DDK`.
+  - The `build.sh` knob `DDK=1.13` builds into `build-<arch>-ddk113` and packages with a `-ddk113` suffix.
+  - Gate passed: the unchanged 1.11 build (NDK r27c, LLVM 19) exports `vk_icd*` and `HMI`. Its NEEDED list is
+    identical to v1.0.0. On the DDK 1.13 phone it behaves exactly like the release: ICD loads, interface
+    version 5, `pvr 1.13.5776728`, 0 devices.

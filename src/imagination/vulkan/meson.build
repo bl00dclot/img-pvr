@@ -119,7 +119,6 @@ if with_imagination_srv
   pvr_files += files(
     'winsys/pvrsrvkm/pvr_srv.c',
     'winsys/pvrsrvkm/pvr_srv_bo.c',
-    'winsys/pvrsrvkm/pvr_srv_bridge.c',
     'winsys/pvrsrvkm/pvr_srv_job_common.c',
     'winsys/pvrsrvkm/pvr_srv_job_compute.c',
     'winsys/pvrsrvkm/pvr_srv_job_null.c',
@@ -134,6 +133,13 @@ if with_imagination_srv
     'winsys/pvrsrvkm/pvr_arch_srv_job_transfer.c',
   )
   pvr_flags += '-DPVR_SUPPORT_SERVICES_DRIVER'
+  if get_option('imagination-srv-ddk') == '1.13'
+    pvr_files += files('winsys/pvrsrvkm/pvr_srv_bridge_ddk113.c')
+    pvr_flags += '-DPVR_SRV_DDK=113'
+  else
+    pvr_files += files('winsys/pvrsrvkm/pvr_srv_bridge.c')
+    pvr_flags += '-DPVR_SRV_DDK=111'
+  endif
 endif
 
 rogue_files = files(

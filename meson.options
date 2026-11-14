@@ -236,6 +236,14 @@ option(
 )
 
 option(
+  'imagination-srv-ddk',
+  type : 'combo',
+  value : '1.11',
+  choices : ['1.11', '1.13'],
+  description : 'Imagination services (pvrsrvkm) kernel driver DDK version the Services backend speaks',
+)
+
+option(
   'imagination-srv',
   type : 'boolean',
   value : false,

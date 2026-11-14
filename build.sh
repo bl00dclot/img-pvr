@@ -32,6 +32,15 @@ esac
 
 BIN="$NDK/toolchains/llvm/prebuilt/$HOST/bin"
 ARCHES="${ARCHES:-armv7 arm64}"
+# DDK picks the kernel driver version the driver speaks: 1.11 (default, build-<arch>) or 1.13
+# (build-<arch>-ddk113, zip suffix -ddk113).
+DDK="${DDK:-1.11}"
+case "$DDK" in
+   1.11) DDK_SUFFIX= ;;
+   1.13) DDK_SUFFIX=-ddk113 ;;
+   *) echo "error: DDK must be 1.11 or 1.13" >&2; exit 1 ;;
+esac
+export PVR_DDK="$DDK"
 
 for tool in meson ninja python3 pkg-config flex bison; do
    if ! command -v "$tool" >/dev/null 2>&1; then
@@ -74,7 +83,7 @@ for arch in $ARCHES; do
       exit 1
    fi
 
-   BUILD="build-$arch"
+   BUILD="build-$arch$DDK_SUFFIX"
    mkdir -p "$BUILD" "$BUILD/pkgconfig-empty"
    cat > "$BUILD/cross.ini" <<EOF
 [binaries]
@@ -101,6 +110,7 @@ EOF
          -Dbuildtype=debugoptimized -Db_ndebug=true \
          -Dplatforms=android -Dplatform-sdk-version=29 -Dandroid-stub=true -Dandroid-strict=false \
          -Dgallium-drivers= -Dvulkan-drivers=imagination -Dimagination-srv=true \
+         -Dimagination-srv-ddk="$DDK" \
          -Dmesa-clc=system -Dprecomp-compiler=system -Dllvm=disabled -Dzstd=disabled \
          -Dglx=disabled -Degl=disabled -Dgbm=disabled -Dopengl=false -Dgles1=disabled \
          -Dgles2=disabled -Dvulkan-layers= -Dtools= -Dperfetto=false -Dlibunwind=disabled \
