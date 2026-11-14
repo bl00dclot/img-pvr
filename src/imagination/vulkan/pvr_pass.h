@@ -98,8 +98,20 @@ struct pvr_render_subpass {
    uint32_t view_mask;
 };
 
+/* XCLIPSE: the union of a render pass's dependencies with VK_SUBPASS_EXTERNAL on one side, applied
+ * as a pipeline barrier before the pass (begin) or after it (end). Without them, work recorded
+ * after the pass (a copy of an attachment, say) did not wait for the pass's fragment job. */
+struct pvr_render_pass_external_dep {
+   VkPipelineStageFlags2 src_stage_mask;
+   VkPipelineStageFlags2 dst_stage_mask;
+   VkAccessFlags2 src_access_mask;
+   VkAccessFlags2 dst_access_mask;
+};
+
 struct pvr_render_pass {
    struct vk_object_base base;
+
+   struct pvr_render_pass_external_dep begin_dep, end_dep;
 
    /* Saved information from pCreateInfo. */
    uint32_t attachment_count;

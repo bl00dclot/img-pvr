@@ -1023,6 +1023,31 @@ PVR_PER_ARCH(CreateRenderPass2)(VkDevice _device,
    for (uint32_t i = 0; i < pCreateInfo->dependencyCount; i++) {
       const VkSubpassDependency2 *dep = &pCreateInfo->pDependencies[i];
 
+      if (dep->srcSubpass == VK_SUBPASS_EXTERNAL ||
+          dep->dstSubpass == VK_SUBPASS_EXTERNAL) {
+         const VkMemoryBarrier2 *barrier2 =
+            vk_find_struct_const(dep->pNext, MEMORY_BARRIER_2);
+         struct pvr_render_pass_external_dep *ext =
+            dep->srcSubpass == VK_SUBPASS_EXTERNAL ? &pass->begin_dep
+                                                   : &pass->end_dep;
+
+         if (dep->srcSubpass == dep->dstSubpass)
+            continue;
+
+         if (barrier2) {
+            ext->src_stage_mask |= barrier2->srcStageMask;
+            ext->dst_stage_mask |= barrier2->dstStageMask;
+            ext->src_access_mask |= barrier2->srcAccessMask;
+            ext->dst_access_mask |= barrier2->dstAccessMask;
+         } else {
+            ext->src_stage_mask |= dep->srcStageMask;
+            ext->dst_stage_mask |= dep->dstStageMask;
+            ext->src_access_mask |= dep->srcAccessMask;
+            ext->dst_access_mask |= dep->dstAccessMask;
+         }
+         continue;
+      }
+
       if (dep->srcSubpass != VK_SUBPASS_EXTERNAL &&
           dep->dstSubpass != VK_SUBPASS_EXTERNAL &&
           dep->srcSubpass != dep->dstSubpass) {

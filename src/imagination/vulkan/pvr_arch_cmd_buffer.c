@@ -4270,6 +4270,30 @@ pvr_resolve_unemitted_resolve_attachments(struct pvr_cmd_buffer *cmd_buffer,
    return pvr_arch_cmd_buffer_end_sub_cmd(cmd_buffer);
 }
 
+/* XCLIPSE: a render pass's dependencies on VK_SUBPASS_EXTERNAL, as a barrier outside the pass. */
+static void
+pvr_cmd_external_dep_barrier(VkCommandBuffer commandBuffer,
+                             const struct pvr_render_pass_external_dep *dep)
+{
+   if (!dep->src_stage_mask || !dep->dst_stage_mask)
+      return;
+
+   const VkMemoryBarrier2 barrier = {
+      .sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER_2,
+      .srcStageMask = dep->src_stage_mask,
+      .srcAccessMask = dep->src_access_mask,
+      .dstStageMask = dep->dst_stage_mask,
+      .dstAccessMask = dep->dst_access_mask,
+   };
+   const VkDependencyInfo info = {
+      .sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO,
+      .memoryBarrierCount = 1,
+      .pMemoryBarriers = &barrier,
+   };
+
+   PVR_PER_ARCH(CmdPipelineBarrier2)(commandBuffer, &info);
+}
+
 void PVR_PER_ARCH(CmdBeginRenderPass2)(
    VkCommandBuffer commandBuffer,
    const VkRenderPassBeginInfo *pRenderPassBeginInfo,
@@ -4288,6 +4312,8 @@ void PVR_PER_ARCH(CmdBeginRenderPass2)(
 
    assert(!state->render_pass_info.pass);
    assert(cmd_buffer->vk.level == VK_COMMAND_BUFFER_LEVEL_PRIMARY);
+
+   pvr_cmd_external_dep_barrier(commandBuffer, &pass->begin_dep);
 
    /* FIXME: Create a separate function for everything using pass->subpasses,
     * look at cmd_buffer_begin_subpass() for example. */
@@ -9724,11 +9750,14 @@ void PVR_PER_ARCH(CmdEndRenderPass2)(VkCommandBuffer commandBuffer,
    /* Save the required fields before clearing render_pass_info struct. */
    attachments = state->render_pass_info.attachments;
    clear_values = state->render_pass_info.clear_values;
+   const struct pvr_render_pass *const pass = state->render_pass_info.pass;
 
    memset(&state->render_pass_info, 0, sizeof(state->render_pass_info));
 
    state->render_pass_info.attachments = attachments;
    state->render_pass_info.clear_values = clear_values;
+
+   pvr_cmd_external_dep_barrier(commandBuffer, &pass->end_dep);
 }
 
 static VkResult
