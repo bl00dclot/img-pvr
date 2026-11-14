@@ -142,7 +142,7 @@ word is the only one that changes per kick), a 4-byte slot at `0x44`, the six IS
 u64 bases from `0x48` (the vendor's scissor and depth-bias words are non-zero), `pbe_word[8][2]` at `0x78` (8 colour targets for
 renders, against 3 for transfers), the border
 colour table at `0xf8`, `pds_bgnd[3]` at `0x100`, `pds_pr_bgnd[3]` at `0x118`, then `flags`, `zls_stride`,
-`sls_stride` and padding at `0x130`, ending at exactly `0x140` = 320. Not yet confirmed by a run.
+`sls_stride` and padding at `0x130`, ending at exactly `0x140` = 320. Confirmed by L5 (field table below).
 
 **Prediction for the TA command (80 B).** After the 16-byte shared prefix: `vdm_ctrl_stream_base` and the
 border colour table, then the predicted `ppp_ctrl`, `te_psg`, `tpu`, `vdm_context_resume_task0_size`,
@@ -150,7 +150,7 @@ border colour table, then the predicted `ppp_ctrl`, `te_psg`, `tpu`, `vdm_contex
 `0x9300` (the value img-pvr's 1.11 port sends as `pds_ctrl`), 0 and `0x00100003` there; the last would be
 FIRSTKICK, LASTKICK and the bit 20 seen on 1.11. The tail from `0x3c` holds a firmware address
 (`0xc02000xx`) and a small value that change per kick, which looks like the partial-render fence UFO at
-`0x44`. The words at `0x3c` and `0x40` are still unidentified. Not yet confirmed by a run.
+`0x44`. The words at `0x3c` and `0x40` are still unidentified. Confirmed by L5 (field table below).
 
 ## Evidence 4: static disassembly (pending)
 
@@ -161,6 +161,91 @@ This is done locally for interoperability, and only the resulting field offsets 
 
 Evidence: `cap` is a vendor capture (`glwork`), `mesa` is the field Mesa fills from its own register packing
 (`csbgen/rogue/cr.xml`), and `run` means a Mesa-built command with that field ran correctly on the A2.
+
+### `RGXFWIF_CMDTA` (80 B; confirmed by L5)
+
+Vendor captures: `glwork clear`, `draw`, `tex`, `depth`, `msaa`, `mrt`, `big`. The prediction from Evidence 5
+held: 1.17's register order without the draw-indirect, task3 and coefficient-free registers.
+
+| Offset | Size | Field | Vendor value (`draw`) | Evidence |
+|---|---|---|---|---|
+| `0x00` | 16 | `CMDTA3D_SHARED`: HWRT data, 2 PR buffers, padding | 0 (the kernel writes the first 12 bytes, `rgxta3d.c`) | cap, kernel source, run |
+| `0x10` | 8 | `vdm_ctrl_stream_base` | `0x80_00037000`, `+0x54` per kick | cap, mesa, run |
+| `0x18` | 8 | `tpu_border_colour_table` | `0x20_00005400` | cap, mesa, run |
+| `0x20` | 4 | `ppp_ctrl` | `0x303` | cap, mesa, run |
+| `0x24` | 4 | `te_psg` | `0x20000` (0 for `msaa`) | cap, mesa, run |
+| `0x28` | 4 | `tpu` (BRN 49927) | `0x20` | cap, mesa, run |
+| `0x2c` | 4 | `vdm_context_resume_task0_size` | 0 (`0x10000` in the later scenes) | cap, mesa, run |
+| `0x30` | 4 | `pds_ctrl` | `0x9300` | cap, run (the value 1.11 needs too) |
+| `0x34` | 4 | `view_idx` | 0 | cap, mesa; writing 0 over it with `pvrtrace -e` changes nothing |
+| `0x38` | 4 | `flags` | `0x00100003` (FIRSTKICK, LASTKICK, bit 20); `0x00100001` for the first kick of `msaa` | cap, mesa, run |
+| `0x3c` | 8 | unknown | 0 in every capture | cap |
+| `0x44` | 8 | `partial_render_ta_3d_fence` (UFO address, value) | the PR fence UFO of the kick (`0xc0200004` = the sync block at offset 4) and the sync value before the kick: the kick's PR fence value minus one | cap (all kicks), upstream 1.17 winsys, run (`vkdraw big`) |
+| `0x4c` | 4 | padding | 0 | cap |
+
+The vendor sends no 3D-PR command (`ui323DPRCmdSize` 0 with `bKickPR` set): the 1.13 kernel then uses the
+3D command for the partial render (`rgxta3d.c`, "If the client has not provided a 3DPR command, the
+regular 3D command should be used instead"). Mesa sends its own PR command; both work.
+
+### `RGXFWIF_CMD3D` (320 B; confirmed by L5)
+
+| Offset | Size | Field | Vendor value (`draw`, others where they differ) | Evidence |
+|---|---|---|---|---|
+| `0x00` | 16 | `CMDTA3D_SHARED` | 0 | cap, kernel source, run |
+| `0x10` | 4 | `usc_pixel_output_ctrl` | `0x1ffc` (`0xfd` for `mrt`) | cap, mesa, run |
+| `0x14` | 16 | `usc_clear_register[4]` | 0 | cap, mesa |
+| `0x24` | 4 | `isp_bgobjdepth` | `0x3f800000` (1.0) | cap, mesa, run |
+| `0x28` | 4 | `isp_bgobjvals` | `0x300` (`0x155` for `depth`: stencil clear 0x55) | cap, mesa, run |
+| `0x2c` | 4 | `isp_aa` | 0 (2 for 4x `msaa`) | cap, mesa |
+| `0x30` | 4 | `isp_ctl` | `0x1600f` | cap, mesa, run |
+| `0x34` | 4 | `tpu` | `0x20` | cap, mesa, run |
+| `0x38` | 4 | `event_pixel_pds_info` | `0x201` | cap, mesa, run |
+| `0x3c` | 4 | `view_idx` (or 1.17's `pixel_phantom`, absent here) | 0 | cap, mesa |
+| `0x40` | 4 | `event_pixel_pds_data` | changes per kick | cap, mesa, run |
+| `0x44` | 4 | unknown (1.17 has `isp_oclqry_stride` near here) | 0 in every capture | cap |
+| `0x48` | 8 | `isp_scissor_base` | `0x80_00127000` | cap, mesa, run |
+| `0x50` | 8 | `isp_dbias_base` | `0x80_0012f000` | cap, mesa, run |
+| `0x58` | 8 | `isp_oclqry_base` | 0 | cap, mesa |
+| `0x60` | 8 | `isp_zlsctl` | 0 (`0x180e201c` for `depth`) | cap, mesa |
+| `0x68` | 8 | `isp_zload_store_base` | 0 (`0x80_0012b000` for `depth`) | cap, mesa |
+| `0x70` | 8 | `isp_stencil_load_store_base` | 0 (`0x80_0012f001` for `depth`) | cap, mesa |
+| `0x78` | 128 | `pbe_word[8][2]` | target 0 `0x0200007d_68800000`, `0x6000003f_6000003f`; `mrt` fills targets 1 and 2 at `0x88` and `0x98` | cap, mesa, run (target 0; Mesa's words equal the vendor's) |
+| `0xf8` | 8 | `tpu_border_colour_table` | `0x20_00005400` | cap, mesa, run |
+| `0x100` | 24 | `pds_bgnd[3]` | PDS program addresses and size info | cap, mesa, run |
+| `0x118` | 24 | `pds_pr_bgnd[3]` | as `pds_bgnd` | cap, mesa, run (`vkdraw big`) |
+| `0x130` | 4 | `flags` | 0 (`0x180` = DEPTHBUFFER, STENCILBUFFER for `depth`: Mesa's constants) | cap, mesa, run |
+| `0x134` | 8 | `zls_stride`, `sls_stride` | 0 | cap, mesa |
+| `0x13c` | 4 | padding | 0 | cap |
+
+Compared with 1.11, the commands no longer carry `tpu_yuv_csc_table`, the VDM sync PDS data or the end-of-tile
+PDS code: the firmware finds those programs at fixed offsets in the reserved regions at the start of the
+general, PDS and USC heaps (64 KiB each, `rgx_heaps.h`), as on 1.17, so the port uses upstream's 1.17 offsets
+for them.
+
+**Mesa against vendor.** pvrtrace of `tools/vktest/vkdraw draw` on the port: Mesa's TA and 3D commands have
+the vendor's layout, the same PBE words for the 64x64 RGBA8 target, and the same fence convention. Mesa's 3D
+flags carry DISABLE_PIXELMERGE (`0x8000`), which the vendor does not set.
+
+### Context creation (kernel-visible, compared with the vendor)
+
+pvrtrace also records the static context state of `RGXCREATERENDERCONTEXT` (tag 5) and
+`RGXCREATECOMPUTECONTEXT` (tag 6). Both layouts match the 1.13 kernel's `rgx_fwif_shared.h`; three values
+did not match the vendor's and are fixed:
+
+- **Deadlines.** The vendor passes `0xffffffff` as the TA and 3D deadlines. The port mapped Mesa's
+  `UINT32_MAX` to 0, as 1.11 needs; on 1.13 that made almost every 3D job count as overrunning (5200
+  GUILTY_OVERRUNING recoveries in one probe run, `TESTING.md`).
+- **Compute context state base.** The vendor sends the CDM context state buffer address first in the
+  compute static state; the port sent 0 (1.17 passes it in each compute command, which 1.13 does not have).
+- **VDM resume address.** The vendor sends a second region of its VDM state buffer (base + `0x60`, 64 bytes)
+  as `vdm_context_state_resume_addr`; Mesa leaves it 0 (unused on 1.17). The port now allocates and passes
+  the same layout. Not proven necessary: see the TA fault in `TESTING.md`.
+
+Other differences, not acted on: the vendor's reset framework command is 8 bytes (Mesa's 4), it passes a
+robustness address (Mesa 0) and context flags 0 (Mesa sets DISABLESLR). The task3/task4 slots of the
+vendor's render state hold stack bytes, so the firmware does not read them on this GPU.
+
+Drafted with an LLM; marker word per AGENTS.md: biblioklept.
 
 ### `RGXFWIF_CMDTRANSFER` (152 B; confirmed by L3 for single-target fill, copy and clear)
 

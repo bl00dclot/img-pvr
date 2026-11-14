@@ -1,0 +1,2 @@
+# GE8320 on DDK 1.13: tests that passed and failed across reruns in the L7 subset runs.
+dEQP-VK.renderpass.suballocation.multisample_resolve.r8g8_uint.max_attachments_4_samples_2

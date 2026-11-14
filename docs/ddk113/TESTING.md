@@ -17,10 +17,10 @@ repeated inside an ordinary app: the ICD loaded with `dlopen` plus a stub `libha
 | L2 | memory can be allocated, mapped and freed, and the heaps look sane | **allocation passes**; map/free not yet checked on their own |
 | L3 | transfer queue: clear and copy work, and the readback checksum matches | **pass for fill, copy and clear + readback** (2026-11-14, native root run): byte-exact, 50/50 runs, no HWR; image-to-image blits and copies not yet run |
 | L4 | compute: a trivial dispatch writes a buffer | **pass** (2026-11-14, native root run): 200/200 dispatches correct, no HWR |
-| L5 | render: a clear, then a triangle, then probe tests T1–T4, with image checksums matching the GLES run | not run |
-| L6 | 200 frames with no HWR increase in `/proc/pvr/debug_dump` | not run |
-| L7 | a dEQP-VK subset passes under `deqp-runner`, with a committed baseline of known failures, flakes and skips (Mesa CI practice), image and shader logging off | not run |
-| L8 | numbers against the GLES baseline | not run |
+| L5 | render: a clear, then a triangle, then probe tests T1–T4, with image checksums matching the GLES run | **pass** (2026-11-15): clear and triangle byte-exact 100/100, a 2-million-triangle scene with partial renders equal to the vendor's checksum; probe T1–T4 run inside the app, T2 and T4 sums equal GLES, T1 within 0.93 %, T3 differs (see the log) |
+| L6 | 200 frames with no HWR increase in `/proc/pvr/debug_dump` | **pass with one exception** (2026-11-15): 12 x 200 probe frames per run, counters unchanged on 4 of 5 in-app runs after the deadline fix; one TA guilty lockup in one run (see the L5 log). `firmware_trace` is off on this kernel ("Debug log type: none") |
+| L7 | a dEQP-VK subset passes under `deqp-runner`, with a committed baseline of known failures, flakes and skips (Mesa CI practice), image and shader logging off | **run, baseline committed** (2026-11-15): 7 subsets, 8,443 pass, 229 fail, 1 flake; GPU recoveries during `api` and `renderpass`; `src/imagination/ci/ge8320-ddk113-{fails,flakes}.txt` |
+| L8 | numbers against the GLES baseline | **done** (2026-11-15): Vulkan 3.7–6x slower than GLES on passes, draws and chains, 1.4x faster on uploads (L5 log table, final run below) |
 
 ## Baseline before the port
 
@@ -127,3 +127,93 @@ word per AGENTS.md: biblioklept.
 `glwork draw`) and the `glwork` modes `depth`, `msaa`, `mrt` and `big` (for TA/3D captures, `big` forcing a
 partial render) are built for armv7 but have not been run on the device. Drafted with an LLM; marker word per
 AGENTS.md: biblioklept.
+
+### 2026-11-15: render (L5), partial renders, in-app probe
+
+Setup: the render gate lifted with the 1.13 TA and 3D commands (`CAPTURE.md`), built with
+`DDK=1.13 scripts/docker-build.sh`, game closed. Native runs as root from `/data/local/tmp`; the probe
+runs inside the `local.vkprobe` app.
+
+- **`tools/vktest/vkdraw clear` and `draw`** (64x64 RGBA8 render pass clear; a full-screen triangle):
+  sum `2613248`, the same as `glwork draw` on the vendor driver, every pixel `0xffbf8040`; `all 50`:
+  100/100 ok. HWR unchanged.
+- **Mesa against vendor:** pvrtrace of `vkdraw draw` shows the vendor's TA and 3D layouts, identical PBE
+  words and the same PR fence convention (`CAPTURE.md`).
+- **`vkdraw big`** (2^21 triangles into 512x512, enough to run the parameter buffer out): sum `173277184`
+  on every iteration, equal to `glwork big` on the vendor driver; 10/10 and 48/48 under a competing vendor
+  GLES load. HWR unchanged.
+- **Found on the way, fixed:**
+  - Deadlines: the first in-app probe run raised the 3D HWR count from 101 to 5301, all overruns
+    (`3D(5301/101+5200)`, the third number counts GUILTY_OVERRUNING). The port mapped Mesa's "no limit"
+    (`UINT32_MAX`) to 0 as 1.11 needs; the vendor passes `0xffffffff`. Passing it through ended the
+    overruns: the next runs left the counters unchanged, and T2's sums went from wrong to equal to GLES.
+  - Render pass external dependencies: the first `vkdraw big` of each process read back 0. Mesa's pvr
+    dropped every subpass dependency on `VK_SUBPASS_EXTERNAL`, so the image-to-buffer copy (a transfer
+    job) did not wait for the render (pvrtrace: `hCheckFenceFD = -1` on the transfer after a 3D kick
+    whose update fence was 13). The pass now turns its external dependencies into pipeline barriers;
+    an explicit `vkCmdPipelineBarrier` in the test had the same effect. Driver core, not DDK-specific.
+- **Probe in the app** (`API=both scripts/run.sh`, log `results/20261114T214543Z-*-both.log` in the
+  private repo), 200 frames per test, cold and warm, every number wall time:
+
+| Test | GLES warm median | Vulkan warm median | Pixel sums GLES / Vulkan |
+|---|---|---|---|
+| T1 64 passes | 0.741 ms/pass | 3.926 ms/pass | 196804608 / 198639616 (centre 58,75,168 / 59,76,170) |
+| T2 individual | 10.18 ms/1000 draws | 38.02 ms/1000 draws | 282240902 / 282240902 |
+| T2 instanced | 4.97 ms/1000 draws | 30.04 ms/1000 draws | 282240902 / 282240902 |
+| T3 separate | 5.00 ms/chain | 29.60 ms/chain | 278003712 / 311951360 |
+| T3 fbfetch / subpass | 4.29 ms/chain | 21.48 ms/chain | 278003712 / 311951360 |
+| T4 uploads | 100.8 ms/frame | 64.2 ms/frame | 33423360 / 33423360 |
+
+  - T1 iterates a bilinear, blended pass 12,800 times; the small difference is within what different
+    filtering and blending precision gives.
+  - T3 iterates `fract(c.gbr * 1.37 + k)` with 8-bit storage 1,600 times. Both Vulkan variants agree with
+    each other and both GLES variants agree with each other; red and blue at the centre match, green
+    does not. The shaders are the same, so this points at arithmetic differences between Mesa's and the
+    vendor's shader compilers in a chaotic iteration, not at the command layouts. Not proven.
+  - GPU clock: both APIs run at the top GED step (680 MHz) under load, so the speed gap is not DVFS.
+- **In-app compute** (probe check C1): sum `6112`, the expected value.
+- **A TA fault, once:** one in-app probe run raised the TA count from 164 to 165: `Guilty Lockup`, PID of
+  the probe, `BIF0 - FAULT ... USCA_USC ... Writing to 0x00000000C0`, timed (kernel clock against
+  `/dev/kmsg`) to the cold T3 test. Three other full probe runs and all native runs left it unchanged, and
+  it did not recur under a competing vendor GLES load. A shader-side write near address 0 during the TA
+  phase fits a context store through a null base; that is why the context-state values were compared
+  with the vendor's and three were fixed (`CAPTURE.md`, context creation). Whether those fixes cover this
+  fault is not shown.
+
+Drafted with an LLM; marker word per AGENTS.md: biblioklept.
+
+### 2026-11-15: dEQP-VK subsets (L7) and the final probe run (L8)
+
+Setup: VK-GL-CTS `vulkan-cts-1.3.10.0` (commit `7aa35516`), `deqp-vk` built as a native Android armv7
+executable (`-DDEQP_TARGET=android -DDEQP_ANDROID_EXE=ON`, NDK r27c), loaded through `tools/vktest/vkshim`
+(`--deqp-vk-library-path`); `deqp-runner` 0.24.0 cross-built for armv7 Android; run as root from
+`/data/local/tmp`, 2 jobs, 120 s timeout, `--deqp-log-images=disable --deqp-log-shader-sources=disable`,
+game closed. Caselists from `external/vulkancts/mustpass/main/vk-default/`.
+
+| Subset (fraction) | Pass | Fail | Flake | Skip (not supported) |
+|---|---|---|---|---|
+| info (all) | 16 | 1 | | 2 |
+| memory (all) | 4,883 | 2 | | 773 |
+| compute (1/10) | 45 | 0 | | 3,482 |
+| api (1/100) | 394 | 200 | | 2,403 |
+| renderpass (1/5) | 2,242 | 25 | 1 | 905 |
+| synchronization (1/20) | 458 | 1 | | 2,558 |
+| draw (1/10) | 405 | 0 | | 2,640 |
+
+- **Failures:** 174 in `api.copy_and_blit` (169 of them `blit_image.all_formats`, typically "max difference
+  = (8, 8, 8, 8), threshold = (2, 2, 2, 2)": filtering precision, not garbage), 26 in `api.image_clearing`,
+  25 in `renderpass` (depth/stencil formats with `d24`, clear attachments), 2 crashes in
+  `memory.device_memory_report.external_memory` (dma-buf and opaque-fd import), `info.device_extensions`,
+  and `synchronization.global_priority_transition.preemption`. Committed as the baseline in
+  `src/imagination/ci/ge8320-ddk113-fails.txt` and `-flakes.txt`, in the format upstream Mesa's CI uses for
+  other PowerVR cores; not triaged further.
+- **GPU recoveries:** HWR `TA 165 / 3D 5301 / CDM 0` before; after `api` TA 211, 3D 6037; after
+  `renderpass` 3D 6325; after `synchronization` CDM 2. The other subsets left the counters unchanged. Which
+  tests caused them is not recorded per test.
+
+**Final probe run** with the build that includes the context-state fixes (`API=both scripts/run.sh`): every
+test completed, pixel sums as in the L5 log, C1 `6112`, HWR counters identical before and after. Warm
+medians, GLES / Vulkan: T1 0.736 / 3.908 ms per pass, T2 10.20 / 37.96 and 4.99 / 30.04 ms per 1,000 draws,
+T3 5.03 / 29.29 and 4.39 / 21.36 ms per chain, T4 90.9 / 64.8 ms per frame.
+
+Drafted with an LLM; marker word per AGENTS.md: biblioklept.

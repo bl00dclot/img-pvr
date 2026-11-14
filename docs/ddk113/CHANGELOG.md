@@ -98,3 +98,20 @@ One entry per change, newest last. Every entry names its evidence. Every commit 
   32-bit client pointers are accepted as their low 32 bits. Harmless edits leave `glwork draw`'s checksum
   and the HWR counters unchanged on the Redmi A2 (`TESTING.md`). Drafted with an LLM; marker word per
   AGENTS.md: biblioklept.
+- **TA and 3D commands (W5, L5):** `ddk113_fwif_cmd_ta` (80 B) and `ddk113_fwif_cmd_3d` (320 B) from vendor
+  captures of seven `glwork` scenes; PDS/USC programs at the firmware's fixed heap offsets; the render gate,
+  and with it the whole submit gate, removed. `vkdraw` clear/draw byte-exact, `vkdraw big` (partial
+  renders) equal to the vendor's checksum, probe T1–T4 in the app (`CAPTURE.md`, `TESTING.md`).
+- **Context creation as the vendor does it:** deadlines passed through (mapping them to 0 made 1.13 count
+  5200 overruns in one run), the compute context state base, and a VDM resume region (`CAPTURE.md`).
+  The VDM state buffer grows from 92 to 160 bytes for 1.11 builds as well; 1.11 does not use the extra
+  region.
+- **Render pass external dependencies (driver core):** turned into pipeline barriers; without them a copy
+  after a long render read an unfinished image (`TESTING.md`).
+- **Tools:** `vkdraw big`, `vkshim` (dEQP-VK's library path), pvrtrace records context static state.
+  Drafted with an LLM; marker word per AGENTS.md: biblioklept.
+- **L7, L8:** dEQP-VK subsets under deqp-runner (8,443 pass, 229 fail, 1 flake), baseline in
+  `src/imagination/ci/ge8320-ddk113-{fails,flakes}.txt`; final probe numbers against GLES (`TESTING.md`).
+- **Release workflow:** `.github/workflows/ddk113-release.yml` builds a `ddk113-v*` tag in the pinned image
+  with a pinned NDK and publishes the zip with its SHA-256 and a build-provenance attestation.
+  Drafted with an LLM; marker word per AGENTS.md: biblioklept.
