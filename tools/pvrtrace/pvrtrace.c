@@ -4,13 +4,21 @@
 // client command layouts (docs/ddk113/CAPTURE.md). Development tool: needs root (ptrace of another
 // process) and is never shipped in a release.
 //
-//   pvrtrace <out.bin> <program> [args...]
+//   pvrtrace [-e TAG:OFFSET=VALUE]... <out.bin> <program> [args...]
+//   pvrtrace --selftest
 //
 // Runs <program> under ptrace (following threads and forks) and, for every DRM_IOCTL_SRVKM_CMD on the
 // PVR render node, writes one record: the bridge group and function, the IN buffer as sent and the
 // OUT buffer as returned. For the kicks it also records the client command buffers the IN struct
 // points to (TA, 3D-PR, 3D, compute, and each transfer prepare), located through the generated
 // DDK 1.13 bridge structs. Records are read back with tools/pvrtrace/decode.py.
+//
+// Edit mode (-e, up to MAX_EDITS): before the kernel copies a kick's command blob, overwrite the u32 at
+// OFFSET with VALUE in the traced process (process_vm_writev), on every kick of TAG (TA, 3D, TQ = every
+// transfer prepare, CDM). OFFSET must be 4-byte aligned, and at least 16 for TA and 3D (the prefix the
+// kernel patches). An edit is refused, with a warning, when OFFSET + 4 exceeds the blob size or the write
+// fails. Records hold the edited blob and are flagged. One field hypothesis per run, on development
+// devices only.
 //
 // The output contains the vendor driver's command streams. It is for local analysis only: never
 // commit it (docs/ddk113/CAPTURE.md, "Rules").
@@ -46,6 +54,10 @@
 #define GROUP_RGXTA3D 130u
 #define MAX_BLOB (1u << 20)
 #define MAX_PREPARES 64u
+#define MAX_EDITS 8u
+#define TAG_TQ 0x100u
+#define FLAG_EDITED 8u
+#define FLAG_EDIT_REFUSED 16u
 
 struct drm_srvkm_cmd {
    uint32_t bridge_id, bridge_func_id;
@@ -56,7 +68,9 @@ struct drm_srvkm_cmd {
 /* Record layout (little endian):
  *   "PVRT" u32 version=2
  *   then records: u32 magic 0x52454332 ('REC2'), u32 flags (bit 0 OUT unreadable, bit 1 prepares
- *                 truncated, bit 2 a command blob could not be read), u32 tid, u32 group, u32 func, s32 ioctl_ret,
+ *                 truncated, bit 2 a command blob could not be read, bit 3 an edit was applied,
+ *                 bit 4 an edit was refused or its write failed; with bit 2 set, edits to the
+ *                 missing blob are neither applied nor counted), u32 tid, u32 group, u32 func, s32 ioctl_ret,
  *                 u32 in_size, u32 out_size, u32 nblobs, in bytes, out bytes,
  *                 nblobs x { u32 tag, u32 size, bytes }
  *   tags: 1 TA, 2 3D-PR, 3 3D, 4 compute, 0x100+i transfer prepare i. */
@@ -64,13 +78,115 @@ struct drm_srvkm_cmd {
 static FILE *out;
 static unsigned long records, dropped_calls;
 
+static int remote_ok(uint64_t addr, size_t size)
+{
+   return addr <= UINTPTR_MAX && size <= UINTPTR_MAX - addr;
+}
+
 static int read_mem(pid_t pid, uint64_t addr, void *dst, size_t size)
 {
    if (!size)
       return 0;
+   if (!remote_ok(addr, size))
+      return -1;
    struct iovec local = { dst, size };
    struct iovec remote = { (void *)(uintptr_t)addr, size };
    return process_vm_readv(pid, &local, 1, &remote, 1, 0) == (ssize_t)size ? 0 : -1;
+}
+
+static int write_u32(pid_t pid, uint64_t addr, uint32_t value)
+{
+   if (!remote_ok(addr, sizeof(value)))
+      return -1;
+   struct iovec local = { &value, sizeof(value) };
+   struct iovec remote = { (void *)(uintptr_t)addr, sizeof(value) };
+   return process_vm_writev(pid, &local, 1, &remote, 1, 0) == (ssize_t)sizeof(value) ? 0 : -1;
+}
+
+struct edit {
+   uint32_t tag; /* 1 TA, 3 3D, 4 CDM, TAG_TQ every transfer prepare */
+   uint32_t offset, value;
+   const char *spec;
+   unsigned long applied, refused;
+};
+
+static struct edit edits[MAX_EDITS];
+static uint32_t nedits;
+
+static int parse_u32(const char *s, char end, const char **rest, uint32_t *v)
+{
+   if (*s < '0' || *s > '9')
+      return -1;
+   char *e;
+   errno = 0;
+   unsigned long long x = strtoull(s, &e, 0);
+   if (errno || *e != end || x > UINT32_MAX)
+      return -1;
+   *rest = e;
+   *v = (uint32_t)x;
+   return 0;
+}
+
+/* TAG:OFFSET=VALUE. Returns NULL, or why the spec is rejected. */
+static const char *parse_edit(const char *spec, struct edit *ed)
+{
+   static const struct {
+      const char *name;
+      uint32_t tag;
+   } tags[] = { { "TA", 1 }, { "3D", 3 }, { "TQ", TAG_TQ }, { "CDM", 4 } };
+   const char *colon = strchr(spec, ':');
+   if (!colon)
+      return "expected TAG:OFFSET=VALUE";
+   memset(ed, 0, sizeof(*ed));
+   for (size_t i = 0; i < sizeof(tags) / sizeof(tags[0]); i++)
+      if (strlen(tags[i].name) == (size_t)(colon - spec) && !strncmp(spec, tags[i].name, colon - spec))
+         ed->tag = tags[i].tag;
+   if (!ed->tag)
+      return "TAG must be TA, 3D, TQ or CDM";
+   const char *p;
+   if (parse_u32(colon + 1, '=', &p, &ed->offset) || parse_u32(p + 1, '\0', &p, &ed->value))
+      return "OFFSET and VALUE must be unsigned 32-bit C integers";
+   if (ed->offset % 4 || ed->offset > MAX_BLOB - 4)
+      return "OFFSET must be 4-byte aligned and inside a blob";
+   if ((ed->tag == 1 || ed->tag == 3) && ed->offset < 16)
+      return "OFFSET below 16 is the prefix the kernel patches in TA and 3D commands";
+   ed->spec = spec;
+   return NULL;
+}
+
+#define CHECK(c)                                                                     \
+   do {                                                                              \
+      if (!(c)) {                                                                    \
+         fprintf(stderr, "pvrtrace: selftest failed at line %d: %s\n", __LINE__, #c); \
+         return 1;                                                                   \
+      }                                                                              \
+   } while (0)
+
+static int selftest(void)
+{
+   struct edit e;
+   CHECK(!parse_edit("TA:0x10=0xdeadbeef", &e) && e.tag == 1 && e.offset == 16 && e.value == 0xdeadbeef);
+   CHECK(!parse_edit("3D:0x13c=010", &e) && e.tag == 3 && e.offset == 0x13c && e.value == 8);
+   CHECK(!parse_edit("TQ:0=1", &e) && e.tag == TAG_TQ && e.offset == 0 && e.value == 1);
+   CHECK(!parse_edit("CDM:28=4294967295", &e) && e.tag == 4 && e.offset == 28 && e.value == UINT32_MAX);
+   CHECK(parse_edit("TA:12=1", &e));
+   CHECK(parse_edit("3D:0=1", &e));
+   CHECK(parse_edit("CDM:2=1", &e));
+   CHECK(parse_edit("CDM:4=0x100000000", &e));
+   CHECK(parse_edit("CDM:4=-1", &e));
+   CHECK(parse_edit("CDM:-4=1", &e));
+   CHECK(parse_edit("CDM: 4=1", &e));
+   CHECK(parse_edit("CDM:4=1x", &e));
+   CHECK(parse_edit("CDM:4=", &e));
+   CHECK(parse_edit("CDM:4", &e));
+   CHECK(parse_edit("CDM:08=1", &e));
+   CHECK(parse_edit("TQ:0x100000=1", &e));
+   CHECK(parse_edit("3D-PR:16=1", &e));
+   CHECK(parse_edit("ta:16=1", &e));
+   CHECK(parse_edit("TA16=1", &e));
+   CHECK(parse_edit(":16=1", &e));
+   fprintf(stderr, "pvrtrace: selftest passed\n");
+   return 0;
 }
 
 static int fd_is_pvr(pid_t pid, int fd)
@@ -86,6 +202,7 @@ static int fd_is_pvr(pid_t pid, int fd)
 
 struct blob {
    uint32_t tag, size;
+   uint64_t addr;
    uint8_t *data;
 };
 
@@ -104,7 +221,7 @@ static void add_blob(pid_t pid, struct blob *blobs, uint32_t *n, uint32_t tag, u
       (*dropped)++;
       return;
    }
-   blobs[(*n)++] = (struct blob){ tag, size, data };
+   blobs[(*n)++] = (struct blob){ tag, size, ptr, data };
 }
 
 /* The client command buffers a kick points at, found through the generated 1.13 IN structs. */
@@ -137,7 +254,7 @@ static uint32_t collect_blobs(pid_t pid, uint32_t group, uint32_t func, const ui
           read_mem(pid, k->pui8FWCommand, cmds, count * sizeof(uint64_t)))
          return n;
       for (uint32_t i = 0; i < count; i++)
-         add_blob(pid, blobs, &n, 0x100 + i, cmds[i], sizes[i], dropped);
+         add_blob(pid, blobs, &n, TAG_TQ + i, cmds[i], sizes[i], dropped);
    }
    return n;
 }
@@ -151,6 +268,7 @@ struct pending {
    uint32_t nblobs;
    uint32_t truncated; /* prepares beyond MAX_PREPARES were not recorded */
    uint32_t dropped;   /* blobs that could not be read or were too large */
+   uint32_t edit_flags; /* FLAG_EDITED, FLAG_EDIT_REFUSED */
 };
 
 #define MAX_TRACEES 256
@@ -172,6 +290,39 @@ static struct pending *slot(pid_t tid)
 }
 
 static void w32(uint32_t v) { fwrite(&v, 4, 1, out); }
+
+/* Runs at syscall entry, before the kernel copies the blobs. The blobs are then read again, so the
+ * record holds what the kernel will see even where transfer prepares overlap. */
+static void apply_edits(pid_t tid, struct pending *p)
+{
+   for (uint32_t i = 0; i < p->nblobs; i++) {
+      struct blob *b = &p->blobs[i];
+      const uint32_t tag = b->tag >= TAG_TQ ? TAG_TQ : b->tag;
+      for (uint32_t j = 0; j < nedits; j++) {
+         struct edit *ed = &edits[j];
+         if (ed->tag != tag)
+            continue;
+         const char *why = NULL;
+         if ((uint64_t)ed->offset + 4 > b->size)
+            why = "past the end of";
+         else if (write_u32(tid, b->addr + ed->offset, ed->value))
+            why = "could not be written to";
+         if (why) {
+            fprintf(stderr, "pvrtrace: edit %s refused: %s the %u-byte blob (tid %d)\n", ed->spec, why,
+                    b->size, tid);
+            ed->refused++;
+            p->edit_flags |= FLAG_EDIT_REFUSED;
+            continue;
+         }
+         ed->applied++;
+         p->edit_flags |= FLAG_EDITED;
+      }
+   }
+   if (p->edit_flags & FLAG_EDITED)
+      for (uint32_t i = 0; i < p->nblobs; i++)
+         if (read_mem(tid, p->blobs[i].addr, p->blobs[i].data, p->blobs[i].size))
+            p->dropped++;
+}
 
 static void on_entry(pid_t tid, struct pt_regs *r, struct pending *p)
 {
@@ -195,9 +346,11 @@ static void on_entry(pid_t tid, struct pt_regs *r, struct pending *p)
       p->cmd.bridge_id = UINT32_MAX;
       return;
    }
-   if (p->in)
+   if (p->in) {
       p->nblobs = collect_blobs(tid, p->cmd.bridge_id, p->cmd.bridge_func_id, p->in,
                                 p->cmd.in_data_size, p->blobs, &p->truncated, &p->dropped);
+      apply_edits(tid, p);
+   }
 }
 
 static void free_blobs(struct pending *p)
@@ -207,6 +360,7 @@ static void free_blobs(struct pending *p)
    p->nblobs = 0;
    p->truncated = 0;
    p->dropped = 0;
+   p->edit_flags = 0;
 }
 
 static void on_exit_(pid_t tid, struct pt_regs *r, struct pending *p)
@@ -216,9 +370,8 @@ static void on_exit_(pid_t tid, struct pt_regs *r, struct pending *p)
    uint8_t *outbuf = calloc(1, p->cmd.out_data_size ? p->cmd.out_data_size : 1);
    if (!outbuf)
       goto done;
-   /* Record flags: bit 0 OUT buffer unreadable (contents zero, not the kernel's), bit 1 transfer
-    * prepares truncated at MAX_PREPARES. */
-   uint32_t flags = 0;
+   /* Record flags: see the record layout. */
+   uint32_t flags = p->edit_flags;
    if (read_mem(tid, p->cmd.out_data_ptr, outbuf, p->cmd.out_data_size))
       flags |= 1;
    if (p->truncated)
@@ -257,15 +410,35 @@ done:
 
 int main(int argc, char **argv)
 {
-   if (argc < 3) {
-      fprintf(stderr, "usage: %s <out.bin> <program> [args...]\n", argv[0]);
+   if (argc == 2 && !strcmp(argv[1], "--selftest"))
+      return selftest();
+   int a = 1;
+   for (; a + 1 < argc && !strcmp(argv[a], "-e"); a += 2) {
+      if (nedits == MAX_EDITS) {
+         fprintf(stderr, "pvrtrace: at most %u edits\n", MAX_EDITS);
+         return 2;
+      }
+      const char *err = parse_edit(argv[a + 1], &edits[nedits]);
+      if (err) {
+         fprintf(stderr, "pvrtrace: -e %s: %s\n", argv[a + 1], err);
+         return 2;
+      }
+      nedits++;
+   }
+   if (argc - a < 2) {
+      fprintf(stderr,
+              "usage: %s [-e TAG:OFFSET=VALUE]... <out.bin> <program> [args...]\n"
+              "       %s --selftest\n"
+              "  -e  overwrite the u32 at OFFSET of every TAG command blob (TA, 3D, TQ, CDM) with VALUE\n"
+              "      before the kernel copies it; OFFSET 4-byte aligned, >= 16 for TA and 3D; up to %u\n",
+              argv[0], argv[0], MAX_EDITS);
       return 2;
    }
    /* Never overwrite an existing capture; owner-only, it holds vendor command streams. */
-   int ofd = open(argv[1], O_WRONLY | O_CREAT | O_EXCL | O_CLOEXEC, 0600);
+   int ofd = open(argv[a], O_WRONLY | O_CREAT | O_EXCL | O_CLOEXEC, 0600);
    out = ofd >= 0 ? fdopen(ofd, "wb") : NULL;
    if (!out) {
-      perror(argv[1]);
+      perror(argv[a]);
       return 1;
    }
    fwrite("PVRT", 1, 4, out);
@@ -280,7 +453,7 @@ int main(int argc, char **argv)
       if (ptrace(PTRACE_TRACEME, 0, NULL, NULL))
          _exit(126);
       raise(SIGSTOP);
-      execvp(argv[2], &argv[2]);
+      execvp(argv[a + 1], &argv[a + 1]);
       perror("execvp");
       _exit(127);
    }
@@ -344,5 +517,8 @@ int main(int argc, char **argv)
    }
    fprintf(stderr, "pvrtrace: %lu bridge calls recorded, %lu dropped (buffers over %u bytes), program exit %d\n",
            records, dropped_calls, MAX_BLOB, exit_code);
+   for (uint32_t i = 0; i < nedits; i++)
+      fprintf(stderr, "pvrtrace: edit %s: %lu applied, %lu refused\n", edits[i].spec, edits[i].applied,
+              edits[i].refused);
    return exit_code;
 }

@@ -91,6 +91,19 @@ submission that runs correctly will be. No 3D-PR command appeared in these workl
 of the words is the next step. The capture format is version 2: blobs are read at syscall entry, and
 records are flagged when the OUT buffer is unreadable or transfer prepares were truncated.
 
+**Edit mode.** `pvrtrace -e TAG:OFFSET=VALUE` (up to 8, TAG one of `TA`, `3D`, `TQ`, `CDM`) overwrites one
+u32 of every kick blob with that tag in the traced process, at syscall entry, before the kernel copies it.
+It tests one field hypothesis per run against the known-good vendor driver running a `glwork` workload: if
+the checksum, HWR counters or firmware state change, the firmware consumes that word; whether it means
+what the prediction says needs a value chosen to tell the readings apart. Offsets below 16 in TA and 3D (the
+prefix the kernel patches) are rejected, an edit past the end of a blob or whose write fails is refused with
+a warning, and records carry the blob as re-read after the edit, with flag bit 3 (`[EDITED]` in
+`decode.py`) or bit 4 (`[EDIT REFUSED]`). A record flagged `[BLOB MISSING]` says nothing about edits to
+that blob. The capture format stays version 2. Like the rest of `pvrtrace` it needs root, is
+for development devices only and is never in the release zip. **Untested on the device:** it has been
+built and its option parser checked, but not yet run on the Redmi A2. (Drafted with an LLM; marker word
+per AGENTS.md: biblioklept.)
+
 ## Evidence 5: feature-conditioned fields (prediction, checked against captures)
 
 Upstream Linux's `drivers/gpu/drm/imagination/pvr_rogue_fwif_client.h` (the 1.17 firmware interface, dual

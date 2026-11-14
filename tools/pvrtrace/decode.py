@@ -74,7 +74,9 @@ def main():
         print(f"#{i} tid={tid} {gname}.{fname} in={len(inb)} out={len(outb)} ioctl={ret} eError={err}"
               + "".join(f" [{TAGS.get(t, hex(t))}:{len(b)}B]" for t, b in blobs)
             + (" [PREPARES TRUNCATED]" if flags & 2 else "")
-            + (" [BLOB MISSING]" if flags & 4 else ""))
+            + (" [BLOB MISSING]" if flags & 4 else "")
+            + (" [EDITED]" if flags & 8 else "")
+            + (" [EDIT REFUSED]" if flags & 16 else ""))
         if a.words:
             for t, b in blobs:
                 words = struct.unpack(f"<{len(b) // 4}I", b[:len(b) // 4 * 4])
