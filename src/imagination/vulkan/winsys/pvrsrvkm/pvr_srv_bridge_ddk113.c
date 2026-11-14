@@ -1092,8 +1092,6 @@ VkResult pvr_srv_rgx_kick_compute2(int fd,
                                    char *update_fence_name,
                                    int32_t *const update_fence_out)
 {
-   PVR_SRV_DDK113_REFUSE_UNCONFIRMED_SUBMIT("compute");
-
    uint64_t *blocks =
       widen(client_update_ufo_sync_prim_block, client_update_count);
    if (client_update_count && !blocks)

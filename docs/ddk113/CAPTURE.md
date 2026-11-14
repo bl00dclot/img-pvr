@@ -59,7 +59,7 @@ so interpolation alone is not enough.
 - **CCB command types and header:** identical to 1.11, with `TYPE_TA` (201) renamed `TYPE_GEOM`
   (`KM:services/include/rogue/rgx_fwif_km.h:1414-1447`).
 
-## Evidence 3: runtime captures (rig working, field decoding in progress)
+## Evidence 3: runtime captures
 
 The tool is `tools/pvrtrace`, a root-only, development-only tracer:
 
@@ -98,4 +98,28 @@ This is done locally for interoperability, and only the resulting field offsets 
 
 ## Field tables
 
-The decoded tables go here, one per struct, each with its evidence column.
+Evidence: `cap` is a vendor capture (`glwork`), `mesa` is the field Mesa fills from its own register packing
+(`csbgen/rogue/cr.xml`), and `run` means a Mesa-built command with that field ran correctly on the A2.
+
+### `RGXFWIF_CMD_COMPUTE` (32 B; layout confirmed by L4, names of `0x18` and `0x1c` unconfirmed)
+
+Vendor capture `glwork compute`: 3 kicks, one 64-invocation workgroup writing one SSBO. The words are identical
+across the kicks apart from the control stream base, which advances by `0x90` per kick.
+
+| Offset | Size | Field | Vendor value | Evidence |
+|---|---|---|---|---|
+| `0x00` | 8 | `tpu_border_colour_table` (`sCDMRegs` starts here, alignment array offset 0) | `0x20_00005400` | cap, mesa, run; same value as in the vendor TA command |
+| `0x08` | 8 | `cdm_ctrl_stream_base` | `0x80_0012f000` + `0x90` per kick | cap, mesa, run |
+| `0x10` | 4 | `tpu` (CR_TPU, written for BRN 49927) | `0x20` = `tag_cem_4k_face_packing` | cap, mesa (Mesa sets exactly this bit for BRN 49927), run |
+| `0x14` | 4 | `cdm_resume_pds1` (CR_CDM_CONTEXT_PDS1) | `0x00900808`: data size 4, common size 1, common shared, unified size 4 | cap, mesa (Mesa's value is identical), run |
+| `0x18` | 4 | flags? (1.17 has flags here) | 0 | cap; Mesa's prevent-all-overlap and single-core bits are not sent, as on 1.11 |
+| `0x1c` | 4 | unknown (1.17 has `num_temp_regions` here) | 0 | cap; 1.11 needed a non-zero `num_temp_regions`, 1.13 runs with 0 |
+
+Compared with 1.11 (64 B), `tpu_yuv_csc_table` is gone, `tpu` shrank to 32 bits, and the 20 trailing bytes
+are dropped. Compared with 1.17, there is no common header, no user-mode-queue registers, and no
+`cdm_context_state_base_addr` (1.13 keeps it in the static context state). The `KICKCDM2` arguments the
+vendor sends are 0 work groups, 0 work items and a deadline of 0, which is what the port sends.
+
+**Mesa against vendor.** A pvrtrace capture of `tools/vktest/vkcompute` on the port shows Mesa's
+`KICKCDM2` blob as `00020000 00000020 000c6000 00000080 00000020 00900808 00000000 00000000`. Only the two
+addresses differ from the vendor's.

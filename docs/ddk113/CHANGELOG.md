@@ -83,3 +83,8 @@ One entry per change, newest last. Every entry names its evidence. Every commit 
   - Captures are created `0600` with `O_EXCL`.
   - `decode.py` bounds-checks every read and checks the capture version.
   - Every derived kernel header was checked: all 31 carry `@License Dual MIT/GPLv2`.
+- **Compute command (W5, L4):** `ddk113_fwif_cmd_compute` (32 B) decoded from the vendor capture: border
+  table, control stream base, `tpu`, `cdm_resume_pds1`, then two zero words. Each field matches Mesa's
+  register packing. The compute gate is lifted; the transfer and render gates stay.
+  `tools/vktest/vkcompute` gives checksum 6112 on 200/200 dispatches with the HWR counters unchanged, and
+  Mesa's blob matches the vendor's apart from the two addresses (`CAPTURE.md`, `TESTING.md`).

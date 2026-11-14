@@ -29,23 +29,33 @@
 
 #include "fw-api/pvr_rogue_fwif.h"
 #include "fw-api/pvr_rogue_fwif_ddk111.h"
+#include "fw-api/pvr_rogue_fwif_ddk113.h"
 
 #include "pvr_csb.h"
 #include "pvr_device_info.h"
 #include "pvr_srv.h"
 #include "pvr_srv_bridge.h"
 
+#if PVR_SRV_DDK == 113
+/* docs/ddk113/CAPTURE.md: the same fields as 1.11 without tpu_yuv_csc_table, in 32 bytes. */
+typedef struct ddk113_fwif_cmd_compute srv_fwif_cmd_compute;
+typedef struct ddk113_fwif_cdm_regs srv_fwif_cdm_regs;
+#else
+typedef struct ddk111_fwif_cmd_compute srv_fwif_cmd_compute;
+typedef struct ddk111_fwif_cdm_regs srv_fwif_cdm_regs;
+#endif
+
 /* XCLIPSE: DDK 1.11 command (fw-api/pvr_rogue_fwif_ddk111.h). The context state base is in the
  * context switch registers given at context creation, and the GE8320 has none of the optional
  * registers below, so they are only skipped. */
 static uint32_t
-pvr_srv_compute_cmd_stream_load(struct ddk111_fwif_cmd_compute *const cmd,
+pvr_srv_compute_cmd_stream_load(srv_fwif_cmd_compute *const cmd,
                                 const uint8_t *const stream,
                                 const uint32_t stream_len,
                                 const struct pvr_device_info *const dev_info)
 {
    const uint32_t *stream_ptr = (const uint32_t *)stream;
-   struct ddk111_fwif_cdm_regs *const regs = &cmd->regs;
+   srv_fwif_cdm_regs *const regs = &cmd->regs;
    uint32_t main_stream_len =
       pvr_csb_unpack((uint64_t *)stream_ptr, KMD_STREAM_HDR).length;
 
@@ -81,7 +91,7 @@ pvr_srv_compute_cmd_stream_load(struct ddk111_fwif_cmd_compute *const cmd,
 }
 
 static void pvr_srv_compute_cmd_ext_stream_load(
-   struct ddk111_fwif_cmd_compute *const cmd,
+   srv_fwif_cmd_compute *const cmd,
    const uint8_t *const stream,
    const uint32_t stream_len,
    const uint32_t ext_stream_offset,
@@ -89,7 +99,7 @@ static void pvr_srv_compute_cmd_ext_stream_load(
 {
    const uint32_t *ext_stream_ptr =
       (const uint32_t *)((uint8_t *)stream + ext_stream_offset);
-   struct ddk111_fwif_cdm_regs *const regs = &cmd->regs;
+   srv_fwif_cdm_regs *const regs = &cmd->regs;
 
    struct ROGUE_KMD_STREAM_EXTHDR_COMPUTE0 header0;
 
@@ -107,7 +117,7 @@ static void pvr_srv_compute_cmd_ext_stream_load(
 
 static void
 srv_compute_cmd_init(const struct pvr_winsys_compute_submit_info *submit_info,
-                     struct ddk111_fwif_cmd_compute *cmd,
+                     srv_fwif_cmd_compute *cmd,
                      const struct pvr_srv_winsys *srv_ws,
                      const struct pvr_device_info *const dev_info)
 {
@@ -115,7 +125,9 @@ srv_compute_cmd_init(const struct pvr_winsys_compute_submit_info *submit_info,
 
    memset(cmd, 0, sizeof(*cmd));
 
+#if PVR_SRV_DDK != 113
    cmd->regs.tpu_yuv_csc_table = pvr_srv_ddk111_yuv_csc_table(srv_ws);
+#endif
 
    ext_stream_offset =
       pvr_srv_compute_cmd_stream_load(cmd,
@@ -134,8 +146,10 @@ srv_compute_cmd_init(const struct pvr_winsys_compute_submit_info *submit_info,
    /* The 1.11 compute flags are unknown and the vendor sends 0, so prevent_all_overlap and
     * use_single_core (meaningless on one core) are not passed on. */
 
+#if PVR_SRV_DDK != 113
    /* How the vendor derives its value is unknown; send the one it sends. */
    cmd->num_temp_regions = 0x27;
+#endif
 }
 
 VkResult PVR_PER_ARCH(srv_winsys_compute_submit)(
@@ -144,12 +158,10 @@ VkResult PVR_PER_ARCH(srv_winsys_compute_submit)(
    const struct pvr_device_info *const dev_info,
    struct vk_sync *signal_sync)
 {
-   PVR_SRV_DDK113_REFUSE_UNCONFIRMED_SUBMIT("compute");
-
    const struct pvr_srv_winsys_compute_ctx *srv_ctx =
       to_pvr_srv_winsys_compute_ctx(ctx);
    const struct pvr_srv_winsys *srv_ws = to_pvr_srv_winsys(ctx->ws);
-   struct ddk111_fwif_cmd_compute compute_cmd;
+   srv_fwif_cmd_compute compute_cmd;
    struct pvr_srv_sync *srv_signal_sync;
    VkResult result;
    int in_fd = -1;

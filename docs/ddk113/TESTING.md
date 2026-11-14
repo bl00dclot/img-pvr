@@ -16,7 +16,7 @@ repeated inside an ordinary app: the ICD loaded with `dlopen` plus a stub `libha
 | L1 | `vkCreateDevice` succeeds | **pass** (2026-11-14), render, compute and transfer contexts created |
 | L2 | memory can be allocated, mapped and freed, and the heaps look sane | **allocation passes**; map/free not yet checked on their own |
 | L3 | transfer queue: clear and copy work, and the readback checksum matches | **blocked on purpose**: the 1.13 build refuses to submit until the command layouts are confirmed |
-| L4 | compute: a trivial dispatch writes a buffer | not run |
+| L4 | compute: a trivial dispatch writes a buffer | **pass** (2026-11-14, native root run): 200/200 dispatches correct, no HWR |
 | L5 | render: a clear, then a triangle, then probe tests T1–T4, with image checksums matching the GLES run | not run |
 | L6 | 200 frames with no HWR increase in `/proc/pvr/debug_dump` | not run |
 | L7 | a dEQP-VK smoke subset passes | not run |
@@ -65,3 +65,21 @@ Results:
   phone's own history), and the firmware state was `OK`. This is weak evidence of GPU health, because the
   gate stopped the run before any GPU work was submitted. The `firmware_trace` tail was not recorded for
   this run, and the native root run (step 0 of this ladder) was skipped.
+
+### 2026-11-14: compute (L4)
+
+Setup: the compute gate lifted with the 1.13 compute command (`CAPTURE.md`, `RGXFWIF_CMD_COMPUTE`). Built
+with `DDK=1.13 scripts/docker-build.sh`. `tools/vktest/vkcompute` (64 invocations, `v[i] = 3i + 1`, the same
+job as `glwork compute`) was run as a native root binary from `/data/local/tmp`, with the game closed. The
+transfer and render gates stay in place.
+
+- **Before:** `RGX FW State: OK`, `Number of HWR: ... TA(164/164+0), 3D(101/101+0), CDM(0/0+0)`.
+- **`vkcompute libvulkan_powervr.so 3`:** checksum 6112 (expected 6112) on all 3 iterations,
+  `v[0..3] = 1 4 7 10`, exit 0.
+- **`vkcompute libvulkan_powervr.so 200`:** `grep -c "checksum 6112 "` gives 200, exit 0.
+- **After both runs:** the HWR line is identical (CDM 0, TA 164, 3D 101) and the FW state is still `OK`.
+- **logcat:** only Mesa's startup notes (gralloc fallback, the `tpu_border_colour_enhanced` FINISHME). No
+  errors.
+- **Trace:** under pvrtrace the run made 170 bridge calls (0 dropped), 3 of them `KICKCDM2`, all `eError=0`.
+
+Not yet done for L4: the run inside the app sandbox, and the `firmware_trace` tail.

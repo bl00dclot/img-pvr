@@ -4,7 +4,7 @@ This fork ports img-pvr (Mesa's Imagination PowerVR Vulkan driver, on Mesa 27.0.
 kernel interface to **DDK 1.13ED5776728**. The target is the Redmi A2. Other MT6765 phones whose kernel driver is DDK 1.13@5776728 may work too, but
 only the A2 is being tested.
 
-**Status: work in progress.** On the Redmi A2 the driver enumerates the GPU, creates a Vulkan 1.3 device and allocates memory (`TESTING.md` L0, L1 and the allocation part of L2). GPU work submission is deliberately refused until the DDK 1.13 command layouts are confirmed (`CAPTURE.md`), so nothing renders yet.
+**Status: work in progress.** On the Redmi A2 the driver enumerates the GPU, creates a Vulkan 1.3 device and allocates memory (`TESTING.md` L0, L1 and the allocation part of L2). Compute dispatches run correctly in a native root run (`TESTING.md` L4; not yet repeated inside an app). Transfer and render submission are still deliberately refused until their DDK 1.13 command layouts are confirmed (`CAPTURE.md`), so nothing renders yet.
 
 ## Target
 
