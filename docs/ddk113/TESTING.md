@@ -20,7 +20,7 @@ repeated inside an ordinary app: the ICD loaded with `dlopen` plus a stub `libha
 | L5 | render: a clear, then a triangle, then probe tests T1–T4, with image checksums matching the GLES run | **pass** (2026-11-15): clear and triangle byte-exact 100/100, a 2-million-triangle scene with partial renders equal to the vendor's checksum; probe T1–T4 run inside the app, T2 and T4 sums equal GLES, T1 within 0.93 %, T3 differs (see the log) |
 | L6 | 200 frames with no HWR increase in `/proc/pvr/debug_dump` | **pass with one exception** (2026-11-15): 12 x 200 probe frames per run, counters unchanged on 4 of 5 in-app runs after the deadline fix; one TA guilty lockup in one run (see the L5 log). `firmware_trace` is off on this kernel ("Debug log type: none") |
 | L7 | a dEQP-VK subset passes under `deqp-runner`, with a committed baseline of known failures, flakes and skips (Mesa CI practice), image and shader logging off | **run, baseline committed** (2026-11-15): 7 subsets, 8,443 pass, 229 fail, 1 flake; GPU recoveries during `api` and `renderpass`; `src/imagination/ci/ge8320-ddk113-{fails,flakes}.txt` |
-| L8 | numbers against the GLES baseline | **done** (2026-11-15): Vulkan 3.7–6x slower than GLES on passes, draws and chains, 1.4x faster on uploads (L5 log table, final run below) |
+| L8 | numbers against the GLES baseline | **done** (2026-11-15): Vulkan 3.7–6x slower than GLES on passes, draws and chains, 1.4x (final run) to 1.6x (first run) faster on uploads (L5 log table, final run below) |
 
 ## Baseline before the port
 
@@ -152,8 +152,7 @@ runs inside the `local.vkprobe` app.
     job) did not wait for the render (pvrtrace: `hCheckFenceFD = -1` on the transfer after a 3D kick
     whose update fence was 13). The pass now turns its external dependencies into pipeline barriers;
     an explicit `vkCmdPipelineBarrier` in the test had the same effect. Driver core, not DDK-specific.
-- **Probe in the app** (`API=both scripts/run.sh`, log `results/20261114T214543Z-*-both.log` in the
-  private repo), 200 frames per test, cold and warm, every number wall time:
+- **Probe in the app** (`API=both scripts/run.sh`), 200 frames per test, cold and warm, every number wall time:
 
 | Test | GLES warm median | Vulkan warm median | Pixel sums GLES / Vulkan |
 |---|---|---|---|
@@ -202,9 +201,10 @@ game closed. Caselists from `external/vulkancts/mustpass/main/vk-default/`.
 
 - **Failures:** 174 in `api.copy_and_blit` (169 of them `blit_image.all_formats`, typically "max difference
   = (8, 8, 8, 8), threshold = (2, 2, 2, 2)": filtering precision, not garbage), 26 in `api.image_clearing`,
-  25 in `renderpass` (depth/stencil formats with `d24`, clear attachments), 2 crashes in
-  `memory.device_memory_report.external_memory` (dma-buf and opaque-fd import), `info.device_extensions`,
-  and `synchronization.global_priority_transition.preemption`. Committed as the baseline in
+  25 in `renderpass` (depth/stencil formats with `d24`, clear attachments), 2 in
+  `memory.device_memory_report.external_memory` (dma-buf and opaque-fd import: the reported memory object
+  ID differs from the original), 1 in `info.device_extensions` and 1 in
+  `synchronization.global_priority_transition.preemption`. Committed as the baseline in
   `src/imagination/ci/ge8320-ddk113-fails.txt` and `-flakes.txt`, in the format upstream Mesa's CI uses for
   other PowerVR cores; not triaged further.
 - **GPU recoveries:** HWR `TA 165 / 3D 5301 / CDM 0` before; after `api` TA 211, 3D 6037; after

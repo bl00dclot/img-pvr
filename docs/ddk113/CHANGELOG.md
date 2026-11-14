@@ -101,9 +101,11 @@ One entry per change, newest last. Every entry names its evidence. Every commit 
 - **TA and 3D commands (W5, L5):** `ddk113_fwif_cmd_ta` (80 B) and `ddk113_fwif_cmd_3d` (320 B) from vendor
   captures of seven `glwork` scenes; PDS/USC programs at the firmware's fixed heap offsets; the render gate,
   and with it the whole submit gate, removed. `vkdraw` clear/draw byte-exact, `vkdraw big` (partial
-  renders) equal to the vendor's checksum, probe T1–T4 in the app (`CAPTURE.md`, `TESTING.md`).
+  renders) equal to the vendor's checksum, probe T1–T4 in the app (T3 differs in one channel; one TA fault
+  in one run, unexplained) (`CAPTURE.md`, `TESTING.md`).
 - **Context creation as the vendor does it:** deadlines passed through (mapping them to 0 made 1.13 count
-  5200 overruns in one run), the compute context state base, and a VDM resume region (`CAPTURE.md`).
+  5200 overruns in one run), the compute context state base, and a VDM resume region (the last copies the
+  vendor; not shown to be needed) (`CAPTURE.md`).
   The VDM state buffer grows from 92 to 160 bytes for 1.11 builds as well; 1.11 does not use the extra
   region.
 - **Render pass external dependencies (driver core):** turned into pipeline barriers; without them a copy

@@ -141,8 +141,8 @@ registers from `0x10` to `0x43` (predicted `tpu` at `0x34`, where the vendor sen
 word is the only one that changes per kick), a 4-byte slot at `0x44`, the six ISP
 u64 bases from `0x48` (the vendor's scissor and depth-bias words are non-zero), `pbe_word[8][2]` at `0x78` (8 colour targets for
 renders, against 3 for transfers), the border
-colour table at `0xf8`, `pds_bgnd[3]` at `0x100`, `pds_pr_bgnd[3]` at `0x118`, then `flags`, `zls_stride`,
-`sls_stride` and padding at `0x130`, ending at exactly `0x140` = 320. Confirmed by L5 (field table below).
+colour table at `0xf8`, `pds_bgnd[3]` at `0x100`, `pds_pr_bgnd[3]` at `0x118`, then `flags` at `0x130`, `zls_stride` and
+`sls_stride` at `0x134` and `0x138` and padding at `0x13c`, ending at exactly `0x140` = 320. Confirmed by L5 (field table below).
 
 **Prediction for the TA command (80 B).** After the 16-byte shared prefix: `vdm_ctrl_stream_base` and the
 border colour table, then the predicted `ppp_ctrl`, `te_psg`, `tpu`, `vdm_context_resume_task0_size`,
