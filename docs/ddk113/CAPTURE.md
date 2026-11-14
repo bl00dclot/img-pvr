@@ -96,17 +96,18 @@ records are flagged when the OUT buffer is unreadable or transfer prepares were 
 Upstream Linux's `drivers/gpu/drm/imagination/pvr_rogue_fwif_client.h` (the 1.17 firmware interface, dual
 MIT/GPLv2) marks many command fields "only used when feature X present" or "only used when BRN Y present".
 The 1.13 vendor commands are smaller than 1.17's because, on this DDK, those fields are compiled out when the
-core lacks the feature. The GE8320's 1.13 kernel config (`hwdefs/rogue/km/configs/rgxconfig_km_22.V.104.18.h`)
-defines none of the features below, so the rule predicts every one of these fields absent:
+core lacks the feature. The GE8320's 1.13 kernel config (`KM: hwdefs/rogue/km/configs/rgxconfig_km_22.V.104.18.h`)
+defines none of the features below, so the rule predicts every one of these fields absent. "Consistent"
+means the captured size and decoded fields leave no room for the field; it is not a field-by-field proof:
 
 | Feature (absent on GE8320) | Field predicted absent | Captured |
 |---|---|---|
-| `CDM_USER_MODE_QUEUE` | compute `cdm_cb_queue`, `cdm_cb_base`, `cdm_cb`, `stream_start_offset` | absent |
-| `COMPUTE_MORTON_CAPABLE` | compute `cdm_item` | absent |
-| `CLUSTER_GROUPING` | compute `compute_cluster`, 3D `pixel_phantom` | absent |
-| `TPU_DM_GLOBAL_REGISTERS` | compute `tpu_tag_cdm_ctrl` | absent |
-| `GPU_MULTICORE_SUPPORT` | compute and 3D `execute_count`, transfer `frag_screen` | absent |
-| `S7_TOP_INFRASTRUCTURE` | transfer and 3D `isp_xtp_pipe_enable` | absent |
+| `CDM_USER_MODE_QUEUE` | compute `cdm_cb_queue`, `cdm_cb_base`, `cdm_cb`, `stream_start_offset` | consistent (32 B, registers decoded) |
+| `COMPUTE_MORTON_CAPABLE` | compute `cdm_item` | consistent (32 B) |
+| `CLUSTER_GROUPING` | compute `compute_cluster`, 3D `pixel_phantom` | compute consistent (32 B); 3D prediction |
+| `TPU_DM_GLOBAL_REGISTERS` | compute `tpu_tag_cdm_ctrl` | consistent (32 B) |
+| `GPU_MULTICORE_SUPPORT` | compute and 3D `execute_count`, transfer `frag_screen` | compute consistent (32 B, but `0x1c` is unidentified); transfer ambiguous (zero word at `0x3c`); 3D prediction |
+| `S7_TOP_INFRASTRUCTURE` | transfer and 3D `isp_xtp_pipe_enable` | transfer absent (`isp_aa` and `event_pixel_pds_info` decode at the 1.17 offsets minus 4); 3D prediction |
 | `VDM_DRAWINDIRECT` | TA `vdm_draw_indirect0/1` | absent (prediction for TA) |
 | `VDM_OBJECT_LEVEL_LLS` | TA `vdm_context_resume_task3_size` | absent (prediction for TA) |
 | `TESSELLATION` | TA `pds_coeff_free_prog` | absent (prediction for TA) |
@@ -117,17 +118,20 @@ BRNs. They are taken from the captures instead (BRN 49927's `tpu` is present in 
 value Mesa packs).
 
 **Prediction for the 3D command, against the vendor draw (320 B).** Removing the absent fields from 1.17's
-`rogue_fwif_frag_regs`, with 4 clear registers and 2 PBE words per target as in 1.11, gives: 14 u32
-registers (`tpu` at `0x34` = `0x20`, `event_pixel_pds_info` at `0x38`, `view_idx` at `0x3c`,
-`event_pixel_pds_data` at `0x40`, the one value that changes per kick), a 4-byte slot at `0x44`, the six ISP
-u64 bases from `0x48` (scissor and depth-bias addresses non-zero), `pbe_word[8][2]` at `0x78`, the border
+`rogue_fwif_frag_regs`, with 4 clear registers and 2 PBE words per target as in 1.11, gives 13 u32
+registers from `0x10` to `0x43` (predicted `tpu` at `0x34`, where the vendor sends `0x20`;
+`event_pixel_pds_info` at `0x38`; `view_idx` at `0x3c`; `event_pixel_pds_data` at `0x40`, where the vendor
+word is the only one that changes per kick), a 4-byte slot at `0x44`, the six ISP
+u64 bases from `0x48` (the vendor's scissor and depth-bias words are non-zero), `pbe_word[8][2]` at `0x78` (8 colour targets for
+renders, against 3 for transfers), the border
 colour table at `0xf8`, `pds_bgnd[3]` at `0x100`, `pds_pr_bgnd[3]` at `0x118`, then `flags`, `zls_stride`,
 `sls_stride` and padding at `0x130`, ending at exactly `0x140` = 320. Not yet confirmed by a run.
 
 **Prediction for the TA command (80 B).** After the 16-byte shared prefix: `vdm_ctrl_stream_base` and the
-border colour table, then `ppp_ctrl` `0x303`, `te_psg` `0x20000`, `tpu` `0x20`, `vdm_context_resume_task0_size`
-0, `pds_ctrl` `0x9300` (the value img-pvr's 1.11 port sends), `view_idx` 0, and `flags` at `0x38` =
-`0x00100003` (FIRSTKICK, LASTKICK and the bit 20 seen on 1.11). The tail from `0x3c` holds a firmware address
+border colour table, then the predicted `ppp_ctrl`, `te_psg`, `tpu`, `vdm_context_resume_task0_size`,
+`pds_ctrl`, `view_idx` and `flags` at `0x20` to `0x38`. The vendor sends `0x303`, `0x20000`, `0x20`, 0,
+`0x9300` (the value img-pvr's 1.11 port sends as `pds_ctrl`), 0 and `0x00100003` there; the last would be
+FIRSTKICK, LASTKICK and the bit 20 seen on 1.11. The tail from `0x3c` holds a firmware address
 (`0xc02000xx`) and a small value that change per kick, which looks like the partial-render fence UFO at
 `0x44`. The words at `0x3c` and `0x40` are still unidentified. Not yet confirmed by a run.
 
