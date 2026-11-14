@@ -91,6 +91,46 @@ submission that runs correctly will be. No 3D-PR command appeared in these workl
 of the words is the next step. The capture format is version 2: blobs are read at syscall entry, and
 records are flagged when the OUT buffer is unreadable or transfer prepares were truncated.
 
+## Evidence 5: feature-conditioned fields (prediction, checked against captures)
+
+Upstream Linux's `drivers/gpu/drm/imagination/pvr_rogue_fwif_client.h` (the 1.17 firmware interface, dual
+MIT/GPLv2) marks many command fields "only used when feature X present" or "only used when BRN Y present".
+The 1.13 vendor commands are smaller than 1.17's because, on this DDK, those fields are compiled out when the
+core lacks the feature. The GE8320's 1.13 kernel config (`hwdefs/rogue/km/configs/rgxconfig_km_22.V.104.18.h`)
+defines none of the features below, so the rule predicts every one of these fields absent:
+
+| Feature (absent on GE8320) | Field predicted absent | Captured |
+|---|---|---|
+| `CDM_USER_MODE_QUEUE` | compute `cdm_cb_queue`, `cdm_cb_base`, `cdm_cb`, `stream_start_offset` | absent |
+| `COMPUTE_MORTON_CAPABLE` | compute `cdm_item` | absent |
+| `CLUSTER_GROUPING` | compute `compute_cluster`, 3D `pixel_phantom` | absent |
+| `TPU_DM_GLOBAL_REGISTERS` | compute `tpu_tag_cdm_ctrl` | absent |
+| `GPU_MULTICORE_SUPPORT` | compute and 3D `execute_count`, transfer `frag_screen` | absent |
+| `S7_TOP_INFRASTRUCTURE` | transfer and 3D `isp_xtp_pipe_enable` | absent |
+| `VDM_DRAWINDIRECT` | TA `vdm_draw_indirect0/1` | absent (prediction for TA) |
+| `VDM_OBJECT_LEVEL_LLS` | TA `vdm_context_resume_task3_size` | absent (prediction for TA) |
+| `TESSELLATION` | TA `pds_coeff_free_prog` | absent (prediction for TA) |
+| `ZLS_SUBTILE`, `ISP_ZLS_D24_S8_PACKING_OGL_MODE`, `FBCDC_ALGORITHM`/`FB_CDC_V4` | 3D `isp_zls_pixels`, `rgx_cr_blackpearl_fix`, `fb_cdc_zls` | absent (prediction for 3D) |
+
+BRN-conditioned fields cannot be predicted this way: the kernel core header lists only the kernel-relevant
+BRNs. They are taken from the captures instead (BRN 49927's `tpu` is present in compute, TA and 3D, with the
+value Mesa packs).
+
+**Prediction for the 3D command, against the vendor draw (320 B).** Removing the absent fields from 1.17's
+`rogue_fwif_frag_regs`, with 4 clear registers and 2 PBE words per target as in 1.11, gives: 14 u32
+registers (`tpu` at `0x34` = `0x20`, `event_pixel_pds_info` at `0x38`, `view_idx` at `0x3c`,
+`event_pixel_pds_data` at `0x40`, the one value that changes per kick), a 4-byte slot at `0x44`, the six ISP
+u64 bases from `0x48` (scissor and depth-bias addresses non-zero), `pbe_word[8][2]` at `0x78`, the border
+colour table at `0xf8`, `pds_bgnd[3]` at `0x100`, `pds_pr_bgnd[3]` at `0x118`, then `flags`, `zls_stride`,
+`sls_stride` and padding at `0x130`, ending at exactly `0x140` = 320. Not yet confirmed by a run.
+
+**Prediction for the TA command (80 B).** After the 16-byte shared prefix: `vdm_ctrl_stream_base` and the
+border colour table, then `ppp_ctrl` `0x303`, `te_psg` `0x20000`, `tpu` `0x20`, `vdm_context_resume_task0_size`
+0, `pds_ctrl` `0x9300` (the value img-pvr's 1.11 port sends), `view_idx` 0, and `flags` at `0x38` =
+`0x00100003` (FIRSTKICK, LASTKICK and the bit 20 seen on 1.11). The tail from `0x3c` holds a firmware address
+(`0xc02000xx`) and a small value that change per kick, which looks like the partial-render fence UFO at
+`0x44`. The words at `0x3c` and `0x40` are still unidentified. Not yet confirmed by a run.
+
 ## Evidence 4: static disassembly (pending)
 
 `llvm-objdump -d` of the vendor GLES and services libraries (ARM32), at the sites that fill the command blobs.

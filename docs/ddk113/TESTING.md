@@ -19,7 +19,7 @@ repeated inside an ordinary app: the ICD loaded with `dlopen` plus a stub `libha
 | L4 | compute: a trivial dispatch writes a buffer | **pass** (2026-11-14, native root run): 200/200 dispatches correct, no HWR |
 | L5 | render: a clear, then a triangle, then probe tests T1–T4, with image checksums matching the GLES run | not run |
 | L6 | 200 frames with no HWR increase in `/proc/pvr/debug_dump` | not run |
-| L7 | a dEQP-VK smoke subset passes | not run |
+| L7 | a dEQP-VK subset passes under `deqp-runner`, with a committed baseline of known failures, flakes and skips (Mesa CI practice), image and shader logging off | not run |
 | L8 | numbers against the GLES baseline | not run |
 
 ## Baseline before the port
