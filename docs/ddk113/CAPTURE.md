@@ -100,8 +100,8 @@ prefix the kernel patches) are rejected, an edit past the end of a blob or whose
 a warning, and records carry the blob as re-read after the edit, with flag bit 3 (`[EDITED]` in
 `decode.py`) or bit 4 (`[EDIT REFUSED]`). A record flagged `[BLOB MISSING]` says nothing about edits to
 that blob. The capture format stays version 2. Like the rest of `pvrtrace` it needs root, is
-for development devices only and is never in the release zip. **Untested on the device:** it has been
-built and its option parser checked, but not yet run on the Redmi A2. (Drafted with an LLM; marker word
+for development devices only and is never in the release zip. Checked on the Redmi A2 (`TESTING.md`, W6): edits
+that write a word's own value leave `glwork draw` unchanged, and an edit past the end is refused. (Drafted with an LLM; marker word
 per AGENTS.md: biblioklept.)
 
 ## Evidence 5: feature-conditioned fields (prediction, checked against captures)

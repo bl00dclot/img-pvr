@@ -78,28 +78,35 @@ struct drm_srvkm_cmd {
 static FILE *out;
 static unsigned long records, dropped_calls;
 
-static int remote_ok(uint64_t addr, size_t size)
+/* A tracee address as a local pointer value, or 0 if [addr, addr + size) is not addressable. The 32-bit
+ * vendor driver sign-extends pointers into the u64 bridge fields (0xffffffffffd09310 for a stack buffer),
+ * so the upper 32 bits may be all ones when bit 31 is set; anything else above 32 bits is rejected. */
+static uintptr_t remote_addr(uint64_t addr, size_t size)
 {
-   return addr <= UINTPTR_MAX && size <= UINTPTR_MAX - addr;
+   if (UINTPTR_MAX == UINT32_MAX && addr >> 31 == 0x1ffffffffull)
+      addr &= UINT32_MAX;
+   return addr && addr <= UINTPTR_MAX && size <= UINTPTR_MAX - addr ? (uintptr_t)addr : 0;
 }
 
 static int read_mem(pid_t pid, uint64_t addr, void *dst, size_t size)
 {
    if (!size)
       return 0;
-   if (!remote_ok(addr, size))
+   const uintptr_t at = remote_addr(addr, size);
+   if (!at)
       return -1;
    struct iovec local = { dst, size };
-   struct iovec remote = { (void *)(uintptr_t)addr, size };
+   struct iovec remote = { (void *)at, size };
    return process_vm_readv(pid, &local, 1, &remote, 1, 0) == (ssize_t)size ? 0 : -1;
 }
 
 static int write_u32(pid_t pid, uint64_t addr, uint32_t value)
 {
-   if (!remote_ok(addr, sizeof(value)))
+   const uintptr_t at = remote_addr(addr, sizeof(value));
+   if (!at)
       return -1;
    struct iovec local = { &value, sizeof(value) };
-   struct iovec remote = { (void *)(uintptr_t)addr, sizeof(value) };
+   struct iovec remote = { (void *)at, sizeof(value) };
    return process_vm_writev(pid, &local, 1, &remote, 1, 0) == (ssize_t)sizeof(value) ? 0 : -1;
 }
 
@@ -183,6 +190,14 @@ static int selftest(void)
    CHECK(parse_edit("TQ:0x100000=1", &e));
    CHECK(parse_edit("3D-PR:16=1", &e));
    CHECK(parse_edit("ta:16=1", &e));
+   if (UINTPTR_MAX == UINT32_MAX) {
+      CHECK(remote_addr(0xffffffffffd09310ull, 32) == 0xffd09310u);
+      CHECK(remote_addr(0x80001000ull, 4) == 0x80001000u);
+      CHECK(!remote_addr(0xffffffff7fff0000ull, 4));
+      CHECK(!remote_addr(0x100001000ull, 4));
+      CHECK(!remote_addr(0xfffffffcull, 8));
+   }
+   CHECK(!remote_addr(0, 4));
    CHECK(parse_edit("TA16=1", &e));
    CHECK(parse_edit(":16=1", &e));
    fprintf(stderr, "pvrtrace: selftest passed\n");

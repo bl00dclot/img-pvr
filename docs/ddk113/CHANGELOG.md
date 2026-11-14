@@ -93,3 +93,8 @@ One entry per change, newest last. Every entry names its evidence. Every commit 
   The vendor's non-zero fields decode with Mesa's register layouts; render targets 1 and 2 are inferred,
   not yet exercised. The transfer gate is lifted; the render gate stays. `tools/vktest/vktransfer` (fill, copy, clear + readback) is byte-exact on 50/50 runs with the HWR
   counters unchanged (`CAPTURE.md`, `TESTING.md`).
+- **W6: `pvrtrace` edit mode.** `-e TAG:OFFSET=VALUE` overwrites one u32 of every TA, 3D, transfer or
+  compute blob in the traced process before the kernel copies it, and flags the record. Sign-extended
+  32-bit client pointers are accepted as their low 32 bits. Harmless edits leave `glwork draw`'s checksum
+  and the HWR counters unchanged on the Redmi A2 (`TESTING.md`). Drafted with an LLM; marker word per
+  AGENTS.md: biblioklept.

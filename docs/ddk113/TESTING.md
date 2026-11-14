@@ -101,3 +101,22 @@ word is checked on the host.
 
 Not yet done for L3: the run inside the app sandbox, the `firmware_trace` tail, and blits between images
 (`vkCmdBlitImage`, `vkCmdCopyImage`).
+
+### 2026-11-15: `pvrtrace` edit mode (W6)
+
+Setup: `pvrtrace` built for armv7 (`-Wall -Wextra -Werror -static`), run as root from `/data/local/tmp`
+over the vendor GLES driver running `glwork draw`, with the game closed.
+
+- **Self-test:** `pvrtrace --selftest` passes on the device, including the address checks below.
+- **Found on the first run:** the edit-mode build recorded 0 bridge calls where the previous build recorded
+  315. The 32-bit vendor driver sign-extends pointers into the u64 bridge fields (a stack buffer arrives as
+  `0xffffffffffd09310`), and the new address check rejected every one. Such addresses are now accepted as
+  their low 32 bits; anything else above 32 bits is still rejected.
+- **No edits:** 315 calls, identical call list to the previous build's capture, checksum `2613248`.
+- **Harmless edits** `-e TA:0x34=0 -e 3D:0x13c=0` (each word's own value) plus `-e TA:0x50=1` (past the end
+  of the 80-byte TA blob): `3 applied, 0 refused` for both harmless edits, `0 applied, 3 refused` for the
+  past-end one; checksum `2613248`; the three `KICKTA3D2` records decode as `[EDITED] [EDIT REFUSED]`.
+- **HWR:** `TA(164/164+0), 3D(101/101+0), CDM(0/0+0)` before and after; `RGX FW State: OK`.
+
+Not yet done: an edit that changes a value (that is the W5 TA/3D decode work). Drafted with an LLM; marker
+word per AGENTS.md: biblioklept.
