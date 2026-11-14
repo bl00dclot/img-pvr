@@ -898,8 +898,6 @@ VkResult pvr_srv_rgx_submit_transfer2(int fd,
                                       int32_t *const update_fence_2d_out,
                                       int32_t *const update_fence_3d_out)
 {
-   PVR_SRV_DDK113_REFUSE_UNCONFIRMED_SUBMIT("transfer");
-
    VkResult vk_result = VK_SUCCESS;
    uint64_t *update_blocks = calloc(prepare_count, sizeof(uint64_t));
    uint64_t *update_offsets = calloc(prepare_count, sizeof(uint64_t));

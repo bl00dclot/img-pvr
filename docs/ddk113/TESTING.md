@@ -15,7 +15,7 @@ repeated inside an ordinary app: the ICD loaded with `dlopen` plus a stub `libha
 | L0 | `vkEnumeratePhysicalDevices` returns 1 device | **pass** (2026-11-14) |
 | L1 | `vkCreateDevice` succeeds | **pass** (2026-11-14), render, compute and transfer contexts created |
 | L2 | memory can be allocated, mapped and freed, and the heaps look sane | **allocation passes**; map/free not yet checked on their own |
-| L3 | transfer queue: clear and copy work, and the readback checksum matches | **blocked on purpose**: the 1.13 build refuses to submit until the command layouts are confirmed |
+| L3 | transfer queue: clear and copy work, and the readback checksum matches | **pass for fill, copy and clear + readback** (2026-11-14, native root run): byte-exact, 50/50 runs, no HWR; image-to-image blits and copies not yet run |
 | L4 | compute: a trivial dispatch writes a buffer | **pass** (2026-11-14, native root run): 200/200 dispatches correct, no HWR |
 | L5 | render: a clear, then a triangle, then probe tests T1–T4, with image checksums matching the GLES run | not run |
 | L6 | 200 frames with no HWR increase in `/proc/pvr/debug_dump` | not run |
@@ -83,3 +83,21 @@ transfer and render gates stay in place.
 - **Trace:** under pvrtrace the run made 170 bridge calls (0 dropped), 3 of them `KICKCDM2`, all `eError=0`.
 
 Not yet done for L4: the run inside the app sandbox, and the `firmware_trace` tail.
+
+### 2026-11-14: transfer (L3)
+
+Setup: the transfer gate lifted with the 1.13 transfer command (`CAPTURE.md`, `RGXFWIF_CMDTRANSFER`); the
+render gate stays. Built with `DDK=1.13 scripts/docker-build.sh`. `tools/vktest/vktransfer` was run as a
+native root binary from `/data/local/tmp`, with the game closed. Each job is its own submit, and every
+word is checked on the host.
+
+- **Before:** `RGX FW State: OK`, `TA(164/164+0), 3D(101/101+0), CDM(0/0+0)`.
+- **`vktransfer ... fill`:** `0/4096 words wrong -> ok`.
+- **`vktransfer ... copy`:** `0/4096 words wrong -> ok`.
+- **`vktransfer ... clear`** (clear a 64x64 RGBA8 image, copy it to a buffer): `0/4096 words wrong -> ok`.
+- **Stress:** `vktransfer ... all` 50 times in a row: 50/50 pass. `vkcompute ... 200` afterwards: 200/200.
+- **After:** the HWR line is identical and the FW state is `OK`. No Mesa errors in logcat.
+- **Trace:** 4 `SUBMITTRANSFER2` per `all` run, all `eError=0`, compared with the vendor in `CAPTURE.md`.
+
+Not yet done for L3: the run inside the app sandbox, the `firmware_trace` tail, and blits between images
+(`vkCmdBlitImage`, `vkCmdCopyImage`).

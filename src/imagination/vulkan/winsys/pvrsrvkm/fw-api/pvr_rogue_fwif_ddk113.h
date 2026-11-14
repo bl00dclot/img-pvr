@@ -29,7 +29,7 @@
  *
  * The client kick commands (TA, 3D, transfer, compute) are never seen by the kernel: their 1.13
  * layouts come from captures of the vendor driver (docs/ddk113/CAPTURE.md), checked against the
- * sizes in the vendor alignment array. Only the compute command is defined so far.
+ * sizes in the vendor alignment array. Transfer and compute are defined so far.
  */
 
 #ifndef PVR_ROGUE_FWIF_DDK113_H
@@ -97,6 +97,52 @@ static_assert(sizeof(struct ddk113_fwif_static_computecontext_state) == 64,
 #define DDK113_FWIF_CMD3D_REGS_OFFSET 16U
 #define DDK113_FWIF_CMDTRANSFER_SIZE 152U
 #define DDK113_FWIF_CMD_COMPUTE_SIZE 32U
+
+/* RGXFWIF_TRANSFERREGISTERS as the vendor fills it (docs/ddk113/CAPTURE.md, transfer): 1.17's order
+ * without isp_xtp_pipe_enable (S7 only), and 6 PBE words: Mesa's 3 render targets at 2 words each
+ * (ROGUE_NUM_PBESTATE_REG_WORDS_FOR_TRANSFER). */
+struct ddk113_fwif_transfer_regs {
+   uint32_t isp_bgobjvals;
+   uint32_t usc_pixel_output_ctrl;
+   uint32_t usc_clear_register0;
+   uint32_t usc_clear_register1;
+   uint32_t usc_clear_register2;
+   uint32_t usc_clear_register3;
+   uint32_t isp_mtile_size;
+   uint32_t isp_render_origin;
+   uint32_t isp_ctl;
+   uint32_t isp_aa;
+   uint32_t event_pixel_pds_info;
+   uint32_t event_pixel_pds_code;
+   uint32_t event_pixel_pds_data;
+   uint32_t isp_render;
+   uint32_t isp_rgn;
+   /* Zero in every capture: 1.17's frag_screen (multicore only) or alignment padding. */
+   uint32_t unknown_3c;
+
+   uint64_t pds_bgnd0_base;
+   uint64_t pds_bgnd1_base;
+   uint64_t pds_bgnd3_sizeinfo;
+   uint64_t isp_mtile_base;
+   uint64_t pbe_wordx_mrty[3 * 2];
+};
+
+/* RGXFWIF_CMDTRANSFER */
+struct ddk113_fwif_cmd_transfer {
+   struct ddk113_fwif_transfer_regs regs;
+   /* Zero in every capture. */
+   uint32_t flags;
+   uint32_t padding;
+};
+
+static_assert(sizeof(struct ddk113_fwif_cmd_transfer) == DDK113_FWIF_CMDTRANSFER_SIZE,
+              "RGXFWIF_CMDTRANSFER size");
+static_assert(offsetof(struct ddk113_fwif_cmd_transfer, regs) == 0, "CMDTRANSFER sTransRegs");
+static_assert(offsetof(struct ddk113_fwif_transfer_regs, isp_render) == 0x34, "TQ isp_render");
+static_assert(offsetof(struct ddk113_fwif_transfer_regs, pds_bgnd0_base) == 0x40,
+              "TQ pds_bgnd0_base");
+static_assert(offsetof(struct ddk113_fwif_transfer_regs, pbe_wordx_mrty) == 0x60,
+              "TQ pbe_wordx_mrty");
 
 /* RGXFWIF_CDM_REGS as the vendor fills it (docs/ddk113/CAPTURE.md, compute): 1.17's register set
  * without the user mode queue registers, the context state base (in the static state, see

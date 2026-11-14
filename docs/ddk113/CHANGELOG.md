@@ -88,3 +88,8 @@ One entry per change, newest last. Every entry names its evidence. Every commit 
   register packing. The compute gate is lifted; the transfer and render gates stay.
   `tools/vktest/vkcompute` gives checksum 6112 on 200/200 dispatches with the HWR counters unchanged, and
   Mesa's blob matches the vendor's apart from the two addresses (`CAPTURE.md`, `TESTING.md`).
+- **Transfer command (W5, L3):** `ddk113_fwif_cmd_transfer` (152 B): 1.17's transfer register order
+  without `isp_xtp_pipe_enable`, with 6 PBE words (3 render targets x 2 words), then flags and padding.
+  The vendor's non-zero fields decode with Mesa's register layouts; render targets 1 and 2 are inferred,
+  not yet exercised. The transfer gate is lifted; the render gate stays. `tools/vktest/vktransfer` (fill, copy, clear + readback) is byte-exact on 50/50 runs with the HWR
+  counters unchanged (`CAPTURE.md`, `TESTING.md`).

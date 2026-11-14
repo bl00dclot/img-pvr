@@ -30,28 +30,38 @@
 
 #include "fw-api/pvr_rogue_fwif.h"
 #include "fw-api/pvr_rogue_fwif_ddk111.h"
+#include "fw-api/pvr_rogue_fwif_ddk113.h"
 
 #include "pvr_csb.h"
 #include "pvr_device_info.h"
 #include "pvr_srv.h"
 #include "pvr_srv_bridge.h"
 
-/* XCLIPSE: TQ_PREP_FLAGS_* of DDK 1.11 (rgx_tq_shared.h). They only steer server syncs and pdump
+#if PVR_SRV_DDK == 113
+/* docs/ddk113/CAPTURE.md: 1.17's register order with 6 PBE words, in 152 bytes. */
+typedef struct ddk113_fwif_cmd_transfer srv_fwif_cmd_transfer;
+typedef struct ddk113_fwif_transfer_regs srv_fwif_transfer_regs;
+#else
+typedef struct ddk111_fwif_cmd_transfer srv_fwif_cmd_transfer;
+typedef struct ddk111_fwif_transfer_regs srv_fwif_transfer_regs;
+#endif
+
+/* XCLIPSE: TQ_PREP_FLAGS_* of DDK 1.11 (rgx_tq_shared.h), unchanged in 1.13. They only steer server syncs and pdump
  * in the kernel; set them as the vendor does. */
 #define DDK111_TQ_PREP_FLAGS_PDUMPCONTINUOUS (1U << 4)
 #define DDK111_TQ_PREP_FLAGS_START (1U << 5)
 #define DDK111_TQ_PREP_FLAGS_END (1U << 6)
 
-/* XCLIPSE: DDK 1.11 command (fw-api/pvr_rogue_fwif_ddk111.h). isp_rgn has no known slot; the
- * GE8320 has neither SIPF v2 nor ipf_creq_pf, so Mesa always packs it as 0. */
+/* XCLIPSE: DDK 1.11 or 1.13 command (fw-api/pvr_rogue_fwif_ddk11[13].h). isp_rgn has a slot
+ * only in 1.13; the GE8320 has neither SIPF v2 nor ipf_creq_pf, so Mesa always packs it as 0. */
 static void
-srv_transfer_cmd_stream_load(struct ddk111_fwif_cmd_transfer *const cmd,
+srv_transfer_cmd_stream_load(srv_fwif_cmd_transfer *const cmd,
                              const uint8_t *const stream,
                              const uint32_t stream_len,
                              const struct pvr_device_info *const dev_info)
 {
    const uint32_t *stream_ptr = (const uint32_t *)stream;
-   struct ddk111_fwif_transfer_regs *const regs = &cmd->regs;
+   srv_fwif_transfer_regs *const regs = &cmd->regs;
    uint32_t main_stream_len =
       pvr_csb_unpack((uint64_t *)stream_ptr, KMD_STREAM_HDR).length;
 
@@ -71,9 +81,20 @@ srv_transfer_cmd_stream_load(struct ddk111_fwif_cmd_transfer *const cmd,
    memcpy(&regs->isp_mtile_base, stream_ptr, sizeof(regs->isp_mtile_base));
    stream_ptr += pvr_cmd_length(CR_ISP_MTILE_BASE);
 
-   STATIC_ASSERT(ARRAY_SIZE(regs->pbe_wordx_mrty) == 9U);
    STATIC_ASSERT(sizeof(regs->pbe_wordx_mrty[0]) == sizeof(uint64_t));
+#if PVR_SRV_DDK == 113
+   /* Mesa streams 9 words but writes render target i at [2i, 2i + 1] (pvr_arch_job_transfer.c),
+    * so with at most 3 targets the last 3 are never written and stay zero. A debug-build check. */
+   STATIC_ASSERT(ARRAY_SIZE(regs->pbe_wordx_mrty) ==
+                 PVR_TRANSFER_MAX_RENDER_TARGETS *
+                    ROGUE_NUM_PBESTATE_REG_WORDS_FOR_TRANSFER);
    memcpy(regs->pbe_wordx_mrty, stream_ptr, sizeof(regs->pbe_wordx_mrty));
+   for (uint32_t i = ARRAY_SIZE(regs->pbe_wordx_mrty) * 2U; i < 9U * 2U; i++)
+      assert(stream_ptr[i] == 0);
+#else
+   STATIC_ASSERT(ARRAY_SIZE(regs->pbe_wordx_mrty) == 9U);
+   memcpy(regs->pbe_wordx_mrty, stream_ptr, sizeof(regs->pbe_wordx_mrty));
+#endif
    stream_ptr += 9U * 2U;
 
    regs->isp_bgobjvals = *stream_ptr;
@@ -119,6 +140,9 @@ srv_transfer_cmd_stream_load(struct ddk111_fwif_cmd_transfer *const cmd,
    stream_ptr += pvr_cmd_length(CR_ISP_RENDER);
 
    assert(*stream_ptr == 0);
+#if PVR_SRV_DDK == 113
+   regs->isp_rgn = *stream_ptr;
+#endif
    stream_ptr++;
 
    if (PVR_HAS_FEATURE(dev_info, gpu_multicore_support))
@@ -130,7 +154,7 @@ srv_transfer_cmd_stream_load(struct ddk111_fwif_cmd_transfer *const cmd,
 
 static void pvr_srv_transfer_cmds_init(
    const struct pvr_winsys_transfer_submit_info *submit_info,
-   struct ddk111_fwif_cmd_transfer *cmds,
+   srv_fwif_cmd_transfer *cmds,
    uint32_t cmd_count,
    const struct pvr_device_info *const dev_info)
 {
@@ -138,7 +162,7 @@ static void pvr_srv_transfer_cmds_init(
 
    for (uint32_t i = 0; i < cmd_count; i++) {
       const struct pvr_winsys_transfer_cmd *submit_cmd = &submit_info->cmds[i];
-      struct ddk111_fwif_cmd_transfer *cmd = &cmds[i];
+      srv_fwif_cmd_transfer *cmd = &cmds[i];
 
       srv_transfer_cmd_stream_load(cmd,
                                    submit_cmd->fw_stream,
@@ -153,13 +177,11 @@ VkResult PVR_PER_ARCH(srv_winsys_transfer_submit)(
    const struct pvr_device_info *const dev_info,
    struct vk_sync *signal_sync)
 {
-   PVR_SRV_DDK113_REFUSE_UNCONFIRMED_SUBMIT("transfer");
-
    const struct pvr_srv_winsys_transfer_ctx *srv_ctx =
       to_pvr_srv_winsys_transfer_ctx(ctx);
    const struct pvr_srv_winsys *srv_ws = to_pvr_srv_winsys(ctx->ws);
 
-   struct ddk111_fwif_cmd_transfer
+   srv_fwif_cmd_transfer
       *cmds_ptr_arr[PVR_TRANSFER_MAX_PREPARES_PER_SUBMIT];
    uint32_t *update_sync_offsets[PVR_TRANSFER_MAX_PREPARES_PER_SUBMIT] = { 0 };
    uint32_t client_update_count[PVR_TRANSFER_MAX_PREPARES_PER_SUBMIT] = { 0 };
@@ -174,7 +196,7 @@ VkResult PVR_PER_ARCH(srv_winsys_transfer_submit)(
    int in_fd = -1;
    int fence;
 
-   STACK_ARRAY(struct ddk111_fwif_cmd_transfer,
+   STACK_ARRAY(srv_fwif_cmd_transfer,
                transfer_cmds,
                submit_info->cmd_count);
    if (!transfer_cmds)

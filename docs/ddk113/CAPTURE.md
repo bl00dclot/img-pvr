@@ -101,6 +101,46 @@ This is done locally for interoperability, and only the resulting field offsets 
 Evidence: `cap` is a vendor capture (`glwork`), `mesa` is the field Mesa fills from its own register packing
 (`csbgen/rogue/cr.xml`), and `run` means a Mesa-built command with that field ran correctly on the A2.
 
+### `RGXFWIF_CMDTRANSFER` (152 B; confirmed by L3 for single-target fill, copy and clear)
+
+Vendor captures: `glwork blit` (32x32 destination) and the 64x64 readbacks in every mode, 1 prepare per
+submit, prepare flags as in 1.11 (`TQ_PREP_FLAGS_*` are unchanged in the 1.13 `rgx_tq_shared.h`). The
+values below decode with Mesa's field layouts from `csbgen/rogue/cr.xml`. `run` is only claimed for fields
+with a non-zero value in the passing L3 jobs: a zero field at a wrong offset would still pass.
+
+| Offset | Size | Field | Vendor value (blit) | Evidence |
+|---|---|---|---|---|
+| `0x00` | 4 | `isp_bgobjvals` | `0x200` = `enablebgtag` | cap, mesa, run |
+| `0x04` | 4 | `usc_pixel_output_ctrl` | `0x1ffc` = partition mask `0x3ff`, 4th partition | cap, mesa, run |
+| `0x08` | 16 | `usc_clear_register0..3` | 0 (Mesa's clear puts the packed colour in register 0) | cap, mesa; run for register 0 only |
+| `0x18` | 4 | `isp_mtile_size` | `0x00020002` for 32x32, `0x00040004` for 64x64 (tiles) | cap, mesa, run |
+| `0x1c` | 4 | `isp_render_origin` | 0 | cap, mesa |
+| `0x20` | 4 | `isp_ctl` | `0x26000` | cap, mesa, run |
+| `0x24` | 4 | `isp_aa` | 0 | cap, mesa |
+| `0x28` | 4 | `event_pixel_pds_info` | `0x202` = usc_sr_size 1, const_size 2 | cap, mesa, run |
+| `0x2c` | 8 | `event_pixel_pds_code`, `_data` | PDS heap offsets | cap, mesa, run |
+| `0x34` | 4 | `isp_render` | 3 | cap, mesa, run |
+| `0x38` | 4 | `isp_rgn` | 0 (Mesa always packs 0 on this GPU) | cap, mesa |
+| `0x3c` | 4 | unknown: 1.17's `frag_screen` or padding | 0 | cap |
+| `0x40` | 8 | `pds_bgnd0_base` | shader and texunicode addresses | cap, mesa, run |
+| `0x48` | 8 | `pds_bgnd1_base` | texturedata address, varying 0 | cap, mesa, run (texturedata) |
+| `0x50` | 8 | `pds_bgnd3_sizeinfo` | `0x00800000_00010001` = sharedsize 1, texturestatesize 1, tempsize 1 | cap, mesa, run |
+| `0x58` | 8 | `isp_mtile_base` | 0 | cap, mesa |
+| `0x60` | 48 | `pbe_wordx_mrty[6]`: 3 render targets x 2 words | target 0 only: `0x0200007d_68800000`, `0x6000001f_6000001f` | cap, mesa, run for target 0; targets 1 and 2 inferred from the size and Mesa's indexing |
+| `0x90` | 4 | `flags` | 0 | cap |
+| `0x94` | 4 | padding | 0 | cap |
+
+This is 1.17's `rogue_fwif_transfer_regs` order without `isp_xtp_pipe_enable` (S7 only) and without the
+common header. 1.11 instead had a BGRND2 slot, a 64-bit `isp_render` and 9 PBE words. Mesa streams 9 PBE
+words but fills only 2 per render target (`ROGUE_NUM_PBESTATE_REG_WORDS_FOR_TRANSFER`), so its 3 targets fit
+the 6 slots and the last 3 stream words are always zero (asserted in the conversion).
+
+**Mesa against vendor.** pvrtrace of `tools/vktest/vktransfer all` shows 4 prepares (fill, copy, clear,
+image-to-buffer), all `eError=0`. The 64x64 image-to-buffer prepare matches the vendor's 64x64 readback word
+for word apart from addresses, `pds_bgnd3_sizeinfo`'s shared size (2 against 1) and the PBE word 0
+swizzle: the vendor writes RGBA (`swiz_chan0..3` = 0, 1, 2, 3), while Mesa writes the buffer as one 32-bit
+channel (0, 5, 5, 4).
+
 ### `RGXFWIF_CMD_COMPUTE` (32 B; layout confirmed by L4, names of `0x18` and `0x1c` unconfirmed)
 
 Vendor capture `glwork compute`: 3 kicks, one 64-invocation workgroup writing one SSBO. The words are identical
