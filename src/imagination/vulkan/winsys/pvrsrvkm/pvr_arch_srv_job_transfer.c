@@ -153,6 +153,8 @@ VkResult PVR_PER_ARCH(srv_winsys_transfer_submit)(
    const struct pvr_device_info *const dev_info,
    struct vk_sync *signal_sync)
 {
+   PVR_SRV_DDK113_REFUSE_UNCONFIRMED_SUBMIT("transfer");
+
    const struct pvr_srv_winsys_transfer_ctx *srv_ctx =
       to_pvr_srv_winsys_transfer_ctx(ctx);
    const struct pvr_srv_winsys *srv_ws = to_pvr_srv_winsys(ctx->ws);

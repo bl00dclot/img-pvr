@@ -24,3 +24,32 @@ One entry per change, newest last. Every entry names its evidence. Every commit 
   - Gate passed: the unchanged 1.11 build (NDK r27c, LLVM 19) exports `vk_icd*` and `HMI`. Its NEEDED list is
     identical to v1.0.0. On the DDK 1.13 phone it behaves exactly like the release: ICD loads, interface
     version 5, `pvr 1.13.5776728`, 0 devices.
+- **W1, W2, W4, W6 and part of W7: DDK 1.13 bridge (`pvr_srv_bridge_ddk113.c`).** This started as img-pvr's
+  1.11 bridge pointed at the generated 1.13 header. The compiler then flagged every struct that changed
+  (28 errors), and each was ported against the 1.13 kernel source.
+  - **Version and connect:** version 1.13 and build 5776728. Options `0x80000010` (the kernel only enforces
+    bit 4). The BVNC is taken from CONNECT's `ui64PackedBvnc`, which uses the same packing as
+    `PVR_BVNC_PACK`. Connect refuses a 32-bit kernel, because handles go over the bridge as u64.
+  - **Software fences:** they work on 1.13 through `/dev/pvr_sync` (`PVR_SW_SYNC_IOC_CREATE_FENCE` and
+    `_INC`). 1.11 had none.
+  - **Bridge calls:** transfer uses `SUBMITTRANSFER2`, compute uses `KICKCDM2` (work-group counts and
+    deadline, no sync PMRs), render uses `CREATEHWRTDATASET` (two RT datas, no render-target objects) and
+    `KICKTA3D2` (combined ZS buffer, dataset handle).
+  - **Free list:** it takes the memory-context private data.
+  - **Render and compute contexts:** they take flags, robustness address and deadlines as parameters. Their
+    static states are the 1.13 context-switch blocks (`fw-api/pvr_rogue_fwif_ddk113.h`, sizes checked at
+    compile time).
+  - **Kept from img-pvr:** destroy-RETRY, CCB sizes, the heap carveout and the deadline mapping.
+- **Memory allocation flags (`pvr_srv_bo.h`).** Seven values differ between 1.11 and 1.13, and the compiler
+  cannot catch these:
+  - `CPU_CACHE_CLEAN`, `SVM`, `SPARSE_*` moved
+  - the cache modes swapped encoding
+  - the device flags moved to bit 26, while the kernel's mask stays `0x0f000000`
+  - an OSID field appeared
+
+  `tools/check_memflags.sh` compiles the kernel's own header against ours. Result: 0 mismatches over 26
+  values for both 1.13 and 1.11.
+- **Safety gate (`PVR_SRV_DDK113_REFUSE_UNCONFIRMED_SUBMIT`).** A 1.13 build refuses compute, transfer and
+  TA/3D submissions, and says so in the log, until the client command layouts are confirmed (W5). The
+  1.11 build is unaffected.
+- **On device:** L0 and L1 pass and L2 allocation passes; L3 is blocked by the gate. See `TESTING.md`.

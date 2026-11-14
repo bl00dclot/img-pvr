@@ -767,6 +767,8 @@ VkResult PVR_PER_ARCH(srv_winsys_render_submit)(
    struct vk_sync *signal_sync_geom,
    struct vk_sync *signal_sync_frag)
 {
+   PVR_SRV_DDK113_REFUSE_UNCONFIRMED_SUBMIT("TA/3D");
+
    const struct pvr_srv_winsys_rt_dataset *srv_rt_dataset =
       to_pvr_srv_winsys_rt_dataset(submit_info->rt_dataset);
    struct pvr_srv_sync_prim *sync_prim =

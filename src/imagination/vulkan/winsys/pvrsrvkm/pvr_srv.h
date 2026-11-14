@@ -24,6 +24,8 @@
 #ifndef PVR_SRV_H
 #define PVR_SRV_H
 
+#include "util/log.h"
+
 #include <stdint.h>
 #include <pthread.h>
 #include <vulkan/vulkan.h>
@@ -141,5 +143,20 @@ static inline uint64_t pvr_srv_ddk111_yuv_csc_table(const struct pvr_srv_winsys 
 
 VkResult pvr_srv_sync_get_presignaled_sync(struct pvr_device *device,
                                            struct pvr_srv_sync **out_sync);
+
+/* DDK 1.13: the client kick command layouts (TA, 3D, transfer, compute) are not confirmed yet
+ * (docs/ddk113/CAPTURE.md). Until they are, a 1.13 build refuses to submit GPU work instead of
+ * sending the firmware a guessed command. Expands to an early return in the submit functions. */
+#if PVR_SRV_DDK == 113
+#define PVR_SRV_DDK113_REFUSE_UNCONFIRMED_SUBMIT(what)                                    \
+   do {                                                                                  \
+      mesa_loge("pvrsrvkm DDK 1.13: the %s command layout is not confirmed yet, "        \
+                "nothing submitted (docs/ddk113/CAPTURE.md)",                            \
+                what);                                                                   \
+      return vk_error(NULL, VK_ERROR_FEATURE_NOT_PRESENT);                               \
+   } while (0)
+#else
+#define PVR_SRV_DDK113_REFUSE_UNCONFIRMED_SUBMIT(what) (void)0
+#endif
 
 #endif /* PVR_SRV_H */

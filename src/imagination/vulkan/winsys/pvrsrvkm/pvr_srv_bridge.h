@@ -133,24 +133,38 @@
 #define SUPPORT_BUFFER_SYNC_SET_OFFSET BITFIELD_BIT(11U)
 #define OPTIONS_BIT31 BITFIELD_BIT(31U)
 
+#if PVR_SRV_DDK == 113
+/* DDK 1.13ED5776728: the kernel only enforces bit 4 (OPTIONS_STRICT in rgx_options.h); 0x80000010 is what
+ * the vendor 1.13 user-mode services library sends (UM build options in /proc/pvr/version). */
+#define RGX_BUILD_OPTIONS (SUPPORT_RGX_SET_OFFSET | OPTIONS_BIT31)
+#else
 /* XCLIPSE: services DDK 1.11ED5425693 (GE8320): the options its kernel accepts,
  * 0x80002810, measured with mesa-powervr/probe/pvrconn.c. */
 #define SUPPORT_SERVER_SYNC_IMPL_OFFSET BITFIELD_BIT(13U)
 #define RGX_BUILD_OPTIONS                                     \
    (SUPPORT_RGX_SET_OFFSET | SUPPORT_BUFFER_SYNC_SET_OFFSET | \
     SUPPORT_SERVER_SYNC_IMPL_OFFSET | OPTIONS_BIT31)
+#endif
 
 #define PVR_SRV_BRIDGE_RGXHWPERF 134UL
 #define PVR_SRV_BRIDGE_RGXHWPERF_RGXGETHWPERFBVNCFEATUREFLAGS 4UL
 
 #define PVR_SRV_VERSION_MAJ 1U
+#if PVR_SRV_DDK == 113
+#define PVR_SRV_VERSION_MIN 13U
+#else
 #define PVR_SRV_VERSION_MIN 11U
+#endif
 
 #define PVR_SRV_VERSION                                              \
    (((uint32_t)((uint32_t)(PVR_SRV_VERSION_MAJ) & 0xFFFFU) << 16U) | \
     (((PVR_SRV_VERSION_MIN) & 0xFFFFU) << 0U))
 
+#if PVR_SRV_DDK == 113
+#define PVR_SRV_VERSION_BUILD 5776728
+#else
 #define PVR_SRV_VERSION_BUILD 5425693
+#endif
 
 /*! This flags gets set if the client is 64 Bit compatible. */
 #define PVR_SRV_FLAGS_CLIENT_64BIT_COMPAT BITFIELD_BIT(5U)
