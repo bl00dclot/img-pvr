@@ -59,17 +59,37 @@ so interpolation alone is not enough.
 - **CCB command types and header:** identical to 1.11, with `TYPE_TA` (201) renamed `TYPE_GEOM`
   (`KM:services/include/rogue/rgx_fwif_km.h:1414-1447`).
 
-## Evidence 3: runtime captures (pending)
+## Evidence 3: runtime captures (rig working, field decoding in progress)
 
-The planned tool is `tools/pvrtrace` (not written yet), a root-only, development-only tracer:
+The tool is `tools/pvrtrace`, a root-only, development-only tracer:
 
-- It `ptrace`s a process running the vendor GLES driver and stops on `ioctl` to the PVR render node or
-  `/dev/pvr_sync`.
+- It runs a program under `ptrace` (following its threads) and records every services bridge `ioctl`
+  (`DRM_IOCTL_SRVKM_CMD`) on the PVR DRM node. Sync ioctls on `/dev/pvr_sync` are not traced.
 - It decodes the bridge package, then reads the IN/OUT buffers and the command buffers they point to with
   `process_vm_readv`.
 
 ptrace is used instead of `LD_PRELOAD` because vendor libraries load in the sphal linker namespace and may
 bypass an interposer. Counts are cross-checked against `strace -f -e trace=ioctl`.
+
+**Workloads:** `tools/pvrtrace/glwork.c` runs native GLES 3.1 jobs on the vendor driver (clear, textured
+draw, texture upload, blit, compute), 3 iterations each, with a checksum. Results are decoded with
+`tools/pvrtrace/decode.py`.
+
+**First captures (2026-11-14, Redmi A2, vendor GLES 1.13@5776728).** The checksum is identical with and
+without tracing, and 261–315 bridge calls were recorded per run.
+
+| Command | Seen in modes | Size the vendor sends |
+|---|---|---|
+| TA (`KICKTA3D2` `psTACmd`) | clear, draw, tex | **80 B** |
+| 3D (`KICKTA3D2` `ps3DCmd`) | clear, draw, tex | **320 B** (no 3D-PR command sent) |
+| Transfer prepare (`SUBMITTRANSFER2`) | every mode (blit, readback) | **152 B**, 1 prepare per submit |
+| Compute (`KICKCDM2` `psDMCmd`) | compute | **32 B** |
+
+The vendor driver's sizes are consistent with the alignment array in Evidence 1. Both come from the vendor
+user-mode stack, so they are not independent proof that the firmware accepts these layouts; only a
+submission that runs correctly will be. No 3D-PR command appeared in these workloads. Field-level decoding
+of the words is the next step. The capture format is version 2: blobs are read at syscall entry, and
+records are flagged when the OUT buffer is unreadable or transfer prepares were truncated.
 
 ## Evidence 4: static disassembly (pending)
 

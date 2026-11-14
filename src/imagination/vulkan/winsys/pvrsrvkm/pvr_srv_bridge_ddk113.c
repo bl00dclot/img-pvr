@@ -87,7 +87,7 @@ static uint64_t *widen(void *const *array, uint32_t n)
 {
    if (!n || !array)
       return NULL;
-   uint64_t *out = malloc(n * sizeof(uint64_t));
+   uint64_t *out = calloc(n, sizeof(uint64_t));
    if (!out)
       return NULL;
    for (uint32_t i = 0; i < n; i++)
@@ -898,6 +898,8 @@ VkResult pvr_srv_rgx_submit_transfer2(int fd,
                                       int32_t *const update_fence_2d_out,
                                       int32_t *const update_fence_3d_out)
 {
+   PVR_SRV_DDK113_REFUSE_UNCONFIRMED_SUBMIT("transfer");
+
    VkResult vk_result = VK_SUCCESS;
    uint64_t *update_blocks = calloc(prepare_count, sizeof(uint64_t));
    uint64_t *update_offsets = calloc(prepare_count, sizeof(uint64_t));
@@ -1066,7 +1068,9 @@ void pvr_srv_rgx_destroy_compute_context(int fd, void *compute_context)
    }
 }
 
-/* 1.13's KICKCDM2: no sync PMRs (unlike 1.17), but work group counts and a deadline. */
+/* 1.13's KICKCDM2: work group counts and a deadline, but no sync PMR arguments at all (unlike 1.17):
+ * sync_pmr_count/flags/pmrs cannot be passed and are dropped here. Implicit sync on shared buffers
+ * for compute needs another mechanism on 1.13 (open, docs/ddk113/TESTING.md). */
 VkResult pvr_srv_rgx_kick_compute2(int fd,
                                    void *compute_context,
                                    uint32_t client_update_count,
@@ -1088,6 +1092,8 @@ VkResult pvr_srv_rgx_kick_compute2(int fd,
                                    char *update_fence_name,
                                    int32_t *const update_fence_out)
 {
+   PVR_SRV_DDK113_REFUSE_UNCONFIRMED_SUBMIT("compute");
+
    uint64_t *blocks =
       widen(client_update_ufo_sync_prim_block, client_update_count);
    if (client_update_count && !blocks)
@@ -1131,7 +1137,8 @@ VkResult pvr_srv_rgx_kick_compute2(int fd,
                            out);
    }
 
-   *update_fence_out = out.hUpdateFence;
+   if (update_fence_out)
+      *update_fence_out = out.hUpdateFence;
 
    return VK_SUCCESS;
 }
@@ -1470,6 +1477,8 @@ VkResult pvr_srv_rgx_kick_render2(int fd,
                                   uint32_t num_mrts,
                                   uint64_t deadline)
 {
+   PVR_SRV_DDK113_REFUSE_UNCONFIRMED_SUBMIT("TA/3D");
+
    VkResult vk_result = VK_SUCCESS;
    uint64_t *ta_fence_blocks =
       widen(client_geom_fence_sync_prim_block, client_geom_fence_count);
@@ -1557,8 +1566,10 @@ VkResult pvr_srv_rgx_kick_render2(int fd,
       goto out_free;
    }
 
-   *update_fence_out = out.hUpdateFence;
-   *update_fence_frag_out = out.hUpdateFence3D;
+   if (update_fence_out)
+      *update_fence_out = out.hUpdateFence;
+   if (update_fence_frag_out)
+      *update_fence_frag_out = out.hUpdateFence3D;
 
 out_free:
    free(pmrs);

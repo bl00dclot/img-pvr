@@ -7,5 +7,5 @@ NDK=${1:?usage: scripts/docker-build.sh <android-ndk-dir>}
 ROOT=$(cd "$(dirname "$0")/.." && pwd)
 IMAGE=img-pvr-build:trixie
 docker build -q -t "$IMAGE" "$ROOT/docker" >/dev/null
-docker run --rm --user "$(id -u):$(id -g)" -e HOME=/tmp -e ARCHES="${ARCHES:-armv7}" -e DDK="${DDK:-1.11}" \
-   -v "$ROOT:/src" -v "$NDK:/ndk:ro" "$IMAGE" ./build.sh /ndk
+docker run --rm --cap-drop ALL --security-opt no-new-privileges --user "$(id -u):$(id -g)" -e HOME=/tmp -e ARCHES="${ARCHES:-armv7}" -e DDK="${DDK:-1.11}" \
+   -v "$ROOT:/src" -v "$ROOT/.git:/src/.git:ro" -v "$NDK:/ndk:ro" "$IMAGE" ./build.sh /ndk

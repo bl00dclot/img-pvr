@@ -4,7 +4,7 @@ This fork ports img-pvr (Mesa's Imagination PowerVR Vulkan driver, on Mesa 27.0.
 kernel interface to **DDK 1.13ED5776728**. The target is the Redmi A2. Other MT6765 phones whose kernel driver is DDK 1.13@5776728 may work too, but
 only the A2 is being tested.
 
-**Status: work in progress.** On the Redmi A2 the driver enumerates the GPU and creates a Vulkan 1.3 device (`TESTING.md` L0–L2). GPU work submission is deliberately refused until the DDK 1.13 command layouts are confirmed (`CAPTURE.md`), so nothing renders yet.
+**Status: work in progress.** On the Redmi A2 the driver enumerates the GPU, creates a Vulkan 1.3 device and allocates memory (`TESTING.md` L0, L1 and the allocation part of L2). GPU work submission is deliberately refused until the DDK 1.13 command layouts are confirmed (`CAPTURE.md`), so nothing renders yet.
 
 ## Target
 
@@ -13,7 +13,7 @@ only the A2 is being tested.
 | GPU | PowerVR Rogue GE8320, BVNC 22.87.104.18 (the same GPU img-pvr supports on DDK 1.11) |
 | Kernel driver | Imagination DDK 1.13@5776728, DRM node name `pvr`, plus `/dev/pvr_sync` |
 | Userspace | 32-bit armeabi-v7a, with the app on an arm64 kernel (compat bridge) |
-| Requirements | no root, no custom kernel, nothing flashed. Checked on 2026-11-14: an ordinary app reaches `/dev/dri/renderD128` and `/dev/pvr_sync` with no SELinux denials |
+| Requirements | no root, no custom kernel, nothing flashed. On the test device (2026-11-14), an ordinary app reached `/dev/dri/renderD128` and `/dev/pvr_sync` with no SELinux denial in the system log. See `TESTING.md` for how this was checked |
 
 ## Why 1.13 needs its own port
 

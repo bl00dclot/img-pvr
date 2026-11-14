@@ -6,6 +6,7 @@
 set -euo pipefail
 DDK=${1:?usage: check_memflags.sh <111|113> <km dir>}
 KM=${2:?usage: check_memflags.sh <111|113> <km dir>}
+case "$DDK" in 111|113) ;; *) echo "error: DDK must be 111 or 113" >&2; exit 2 ;; esac
 ROOT=$(cd "$(dirname "$0")/.." && pwd)
 WORK=$(mktemp -d)
 trap 'rm -rf "$WORK"' EXIT

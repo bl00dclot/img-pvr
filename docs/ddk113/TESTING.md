@@ -53,10 +53,15 @@ Results:
   GPU timestamps, so timing has to be wall-clock.
 - **L1:** `vkCreateDevice` succeeded. This created render, compute and transfer contexts, so the kernel
   accepted the 184-byte and 64-byte static states, the timelines on `/dev/pvr_sync` and the free-list setup.
-- **SELinux:** the log has no `avc: denied` lines at all, so `/dev/pvr_sync` is usable from the app sandbox.
+- **SELinux:** the full system logcat for the run, read over a root adb shell (where `avc: denied` audit lines
+  do appear: an earlier run showed the sysfs `uevent` denial), has no `avc: denied` lines. Context creation
+  opened its timelines on `/dev/pvr_sync`, so on this device and ROM (Android 14 GSI on a MIUI 13 vendor,
+  app targetSdk 35) the app sandbox can use `/dev/pvr_sync`. Other ROMs are untested.
 - **L2:** memory has 1 heap of 1400 MiB and memtype 0 with flags `0x7` (device-local, host-visible,
   host-coherent). Image and buffer allocations succeed.
 - **L3:** the first submission (a transfer) stops at the gate, as intended:
   `the transfer command layout is not confirmed yet, nothing submitted (docs/ddk113/CAPTURE.md)`.
 - **GPU state:** the `/proc/pvr/debug_dump` HWR counters were identical before and after (TA 164, 3D 101; the
-  phone's own history). The firmware state was `OK`.
+  phone's own history), and the firmware state was `OK`. This is weak evidence of GPU health, because the
+  gate stopped the run before any GPU work was submitted. The `firmware_trace` tail was not recorded for
+  this run, and the native root run (step 0 of this ladder) was skipped.

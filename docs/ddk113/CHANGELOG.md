@@ -11,11 +11,11 @@ One entry per change, newest last. Every entry names its evidence. Every commit 
   rejects any field type it does not know.
   - Self-check: run on the 1.11 kernel tree, it reproduces img-pvr's `pvr_srv_bridge_ddk111.h` exactly
     (216 of 216 structs identical, `--compare`).
-  - Result: 206 structs for 1.13, each with a `_Static_assert` on its size. These hold with NDK r27c armv7
-    clang.
+  - Result: 206 structs for 1.13. Each has a `_Static_assert` on its size, which guards packing and the
+    compiler only (the generator computes both sides). The kernel ABI itself is checked separately, against
+    real vendor traffic (see the capture entry below).
   - IDs match `ABI.md`: `KICKTA3D2`=13, `KICKCDM2`=6, `PHYSMEMEXPORTDMABUF`=1, `GETMULTICOREINFO`=12.
-  - Not yet used by any code.
-- **P1: reproducible build.**
+- **P1: containerised build** (the base image is pinned by digest; apt packages float with the trixie archive).
   - `docker/Dockerfile` uses Debian trixie pinned by digest. `scripts/docker-build.sh` mounts the NDK
     read-only.
   - The new meson option `imagination-srv-ddk` (`1.11` default, or `1.13`) selects `pvr_srv_bridge.c` or
@@ -53,3 +53,33 @@ One entry per change, newest last. Every entry names its evidence. Every commit 
   TA/3D submissions, and says so in the log, until the client command layouts are confirmed (W5). The
   1.11 build is unaffected.
 - **On device:** L0 and L1 pass and L2 allocation passes; L3 is blocked by the gate. See `TESTING.md`.
+- **Review fixes (pre-push security review):**
+  - The gate fails closed: `PVR_SRV_DDK` must be 111 or 113, otherwise the build stops with `#error`.
+  - The gate is also placed in the three bridge wrappers.
+  - Submit refusals return `VK_ERROR_DEVICE_LOST`.
+  - `widen()` uses `calloc`.
+  - Fence outputs are null-checked.
+  - The dropped compute sync-PMR arguments are documented (1.13's `KICKCDM2` has none).
+  - The full Imagination MIT notice is included in the generated and firmware headers.
+  - `check_memflags.sh` validates its DDK argument.
+  - The Docker build drops all capabilities, sets `no-new-privileges`, and mounts `.git` read-only.
+- **P2: capture rig.** `tools/pvrtrace` (a ptrace bridge tracer, root and development use only) and
+  `tools/pvrtrace/glwork.c` (native GLES workloads: clear, draw, tex, blit, compute).
+  - The vendor 1.13 GLES driver was captured on the test device. Captures stay local
+    (`docs/ddk113/CAPTURE.md`).
+  - Vendor command sizes: TA 80 B, 3D 320 B, transfer 152 B, compute 32 B. These equal the alignment-array
+    values.
+  - Of the 30 bridge functions the vendor driver used, the 27 with a real IN struct match our generated
+    IN/OUT sizes exactly. This is a size match, not a field-by-field check. Among them are `CREATERENDERCONTEXT` 68, `CREATECOMPUTECONTEXT` 56, `KICKTA3D2` 272,
+    `KICKCDM2` 92, `SUBMITTRANSFER2` 116, `CREATEHWRTDATASET` 166 and `CREATEFREELIST` 60.
+  - The other 3 functions take an empty IN struct: the vendor sends 0 bytes, and we send the 4-byte
+    placeholder, which the kernel accepts.
+- **Second review fixes (pvrtrace v2):**
+  - Per-thread entry/exit state is kept in the tracee slot and cleared when the thread exits (no tid
+    aliasing).
+  - Command blobs are read at syscall entry.
+  - Unreadable OUT buffers and truncated prepares are flagged in the record.
+  - Write errors stop the trace.
+  - Captures are created `0600` with `O_EXCL`.
+  - `decode.py` bounds-checks every read and checks the capture version.
+  - Every derived kernel header was checked: all 31 carry `@License Dual MIT/GPLv2`.
