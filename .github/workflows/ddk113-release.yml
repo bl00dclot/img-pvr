@@ -1,0 +1,69 @@
+# Release build of the DDK 1.13 driver (docs/ddk113/README.md): runs only for a pushed ddk113-v* tag,
+# builds in the repository's pinned Docker image with a pinned NDK, publishes the zip with its SHA-256 and a
+# GitHub build-provenance attestation. No secrets beyond the job's own token. Drafted with an LLM; marker
+# word per AGENTS.md: biblioklept.
+name: ddk113 release
+
+on:
+  push:
+    tags: ['ddk113-v*']
+
+permissions:
+  contents: read
+
+jobs:
+  release:
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write     # create the release
+      id-token: write     # Sigstore signing for the attestation
+      attestations: write
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+
+      - name: Only tags on the ddk113 branch
+        run: git merge-base --is-ancestor "$GITHUB_SHA" origin/ddk113
+
+      - name: Fetch the NDK (r27c, pinned by SHA-256)
+        run: |
+          set -euo pipefail
+          curl -fsSL -o "$RUNNER_TEMP/ndk.zip" https://dl.google.com/android/repository/android-ndk-r27c-linux.zip
+          echo "59c2f6dc96743b5daf5d1626684640b20a6bd2b1d85b13156b90333741bad5cc  $RUNNER_TEMP/ndk.zip" | sha256sum -c -
+          unzip -q "$RUNNER_TEMP/ndk.zip" -d "$RUNNER_TEMP"
+
+      - name: Build (DDK 1.13, armv7)
+        run: DDK=1.13 ARCHES=armv7 scripts/docker-build.sh "$RUNNER_TEMP/android-ndk-r27c"
+
+      - name: Checksums
+        run: |
+          set -euo pipefail
+          cd dist
+          sha256sum -- *-ddk113.zip > SHA256SUMS
+          cat SHA256SUMS
+
+      - uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
+        with:
+          subject-path: dist/*-ddk113.zip
+
+      - name: Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          {
+            echo "Mesa PowerVR Vulkan driver (img-pvr fork) for the Imagination DDK 1.13 kernel driver, armv7."
+            echo "Tested on a Redmi A2 (GE8320, DDK 1.13@5776728): docs/ddk113/TESTING.md. Work in progress;"
+            echo "AI-written (docs/ddk113/README.md). Not part of Mesa."
+            echo
+            echo "SHA-256:"
+            echo '```'
+            cat dist/SHA256SUMS
+            echo '```'
+            echo "Verify the provenance: gh attestation verify <zip> --repo $GITHUB_REPOSITORY"
+          } > "$RUNNER_TEMP/notes.md"
+          gh release create "$TAG" --verify-tag dist/*-ddk113.zip dist/SHA256SUMS --prerelease --title "$TAG" \
+            --notes-file "$RUNNER_TEMP/notes.md"
