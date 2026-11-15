@@ -5,6 +5,7 @@
 //
 //   glwork clear | draw | tex | blit | compute     (64x64 RGBA8 pbuffer-less FBO, 3 iterations)
 //   glwork depth | msaa | mrt | big                 (render scenes for TA/3D capture, 3 iterations)
+//   glwork bench <mode> [iterations] [rgba16f]       (512x512 GPU-timing passes, the twin of tools/vktest/vkbench)
 //     depth  RGBA8 + D24S8: depth cleared to 1.0, stencil to 0x55, GL_LESS depth test, stencil REPLACE 0x33;
 //            two full-screen triangles, z = 0.5 then z = -0.5, in different colours
 //     msaa   4x RGBA8 renderbuffer, the triangle, resolved into the single-sample FBO by glBlitFramebuffer
@@ -167,6 +168,124 @@ static int scene(const char *mode, GLuint resolve_fbo)
    return 0;
 }
 
+/* bench: the shaders of tools/vktest/bench/ in GLSL ES, one 512x512 pass per iteration with a glFinish, so
+ * tools/gputrace times every 3D job; the counterpart of tools/vktest/vkbench (same modes, texture pattern,
+ * filtering and blend). Highp throughout except alum/tvm, as in the Vulkan shaders. With
+ * GLWORK_DUMP_BINARY=<file> the program binary is written out, for an offline look at what the vendor
+ * compiler emits. */
+static int bench(int argc, char **argv)
+{
+   static const struct {
+      const char *name, *body;
+   } modes[] = {
+      { "fill", "o = vec4(0.25, 0.5, 0.75, 0.5);" },
+      { "blend", "o = vec4(0.25, 0.5, 0.75, 0.5);" },
+      { "tv", "o = texture(t, uv);" },
+      { "tf", "o = texture(t, gl_FragCoord.xy / 512.0);" },
+      { "td", "vec4 a = texture(t, uv); o = texture(t, fract(a.xy + uv));" },
+      { "c1", "o = vec4(texture(t, uv).r, 0.0, 0.0, 1.0);" },
+      { "c2", "vec2 c = texture(t, uv).rg; o = vec4(c, 0.0, 1.0);" },
+      { "fetch", "o = texelFetch(t, ivec2(gl_FragCoord.xy), 0);" },
+      { "disc", "vec4 c = texture(t, uv); if (c.a < 0.5) discard; o = c;" },
+      { "alu", "float x = uv.x, y = uv.y; for (int i = 0; i < 32; i++) { x = fract(x * 1.37 + y); "
+               "y = fract(y * 1.11 + x); } o = vec4(x, y, 0.0, 1.0);" },
+      { "alum", "mediump float x = uv.x, y = uv.y; for (int i = 0; i < 32; i++) { x = fract(x * 1.37 + y); "
+                "y = fract(y * 1.11 + x); } o = vec4(x, y, 0.0, 1.0);" },
+      { "tvm", "mediump vec4 c = texture(t, uv); o = c;" },
+   };
+   const char *mode = argc > 2 ? argv[2] : "fill";
+   const int iterations = argc > 3 ? atoi(argv[3]) : 10;
+   const int f16tex = argc > 4 && !strcmp(argv[4], "rgba16f");
+   const char *body = NULL;
+   for (unsigned i = 0; i < sizeof(modes) / sizeof(modes[0]); i++)
+      if (!strcmp(modes[i].name, mode))
+         body = modes[i].body;
+   if (!body || iterations < 1) {
+      fprintf(stderr, "glwork bench: unknown mode %s or bad iteration count\n", mode);
+      return 2;
+   }
+   const int blend = !strcmp(mode, "blend");
+
+   static uint8_t src8[BIG * BIG * 4];
+   static uint16_t src16[BIG * BIG * 4];
+   for (int y = 0; y < BIG; y++) {
+      for (int x = 0; x < BIG; x++) {
+         const uint8_t px[4] = { (uint8_t)(x * 7), (uint8_t)(y * 5), (uint8_t)(x ^ y), (uint8_t)((x + y) & 255) };
+         for (int c = 0; c < 4; c++) {
+            src8[(y * BIG + x) * 4 + c] = px[c];
+            src16[(y * BIG + x) * 4 + c] =
+               (uint16_t)(((px[c] & 0x80) ? (14u << 10) : (13u << 10)) | ((px[c] & 0x7fu) << 3));
+         }
+      }
+   }
+   GLuint tex, rt, fbo;
+   glGenTextures(1, &tex);
+   glBindTexture(GL_TEXTURE_2D, tex);
+   glTexStorage2D(GL_TEXTURE_2D, 1, f16tex ? GL_RGBA16F : GL_RGBA8, BIG, BIG);
+   glTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, BIG, BIG, GL_RGBA, f16tex ? GL_HALF_FLOAT : GL_UNSIGNED_BYTE,
+                   f16tex ? (const void *)src16 : (const void *)src8);
+   glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+   glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+   glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_REPEAT);
+   glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_REPEAT);
+   glGenTextures(1, &rt);
+   glBindTexture(GL_TEXTURE_2D, rt);
+   glTexStorage2D(GL_TEXTURE_2D, 1, GL_RGBA8, BIG, BIG);
+   glGenFramebuffers(1, &fbo);
+   glBindFramebuffer(GL_FRAMEBUFFER, fbo);
+   glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, rt, 0);
+   if (glCheckFramebufferStatus(GL_FRAMEBUFFER) != GL_FRAMEBUFFER_COMPLETE) {
+      fprintf(stderr, "glwork bench: framebuffer incomplete\n");
+      return 1;
+   }
+
+   char fs[1024];
+   snprintf(fs, sizeof(fs),
+            "#version 300 es\nprecision highp float;uniform sampler2D t;in vec2 uv;out vec4 o;void main(){%s}",
+            body);
+   GLuint p = prog(GL_VERTEX_SHADER,
+                   "#version 300 es\nout vec2 uv;void main(){vec2 p=vec2((gl_VertexID<<1)&2,gl_VertexID&2);"
+                   "uv=p;gl_Position=vec4(p*2.0-1.0,0,1);}",
+                   GL_FRAGMENT_SHADER, fs);
+   glUseProgram(p);
+   glUniform1i(glGetUniformLocation(p, "t"), 0);
+   glActiveTexture(GL_TEXTURE0);
+   glBindTexture(GL_TEXTURE_2D, tex);
+   glViewport(0, 0, BIG, BIG);
+   if (blend) {
+      glEnable(GL_BLEND);
+      glBlendFuncSeparate(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA, GL_ONE, GL_ZERO);
+   }
+   glClearColor(0, 0, 0, 1);
+   for (int it = 0; it < iterations; it++) {
+      if (!blend)
+         glClear(GL_COLOR_BUFFER_BIT);
+      glDrawArrays(GL_TRIANGLES, 0, 3);
+      glFinish();
+   }
+   printf("glwork bench %s%s: %d passes, sum %u, glGetError 0x%x\n", mode, f16tex ? " rgba16f" : "",
+          iterations, readsum(GL_COLOR_ATTACHMENT0, BIG, BIG), glGetError());
+
+   const char *dump = getenv("GLWORK_DUMP_BINARY");
+   if (dump) {
+      GLint len = 0;
+      glGetProgramiv(p, GL_PROGRAM_BINARY_LENGTH, &len);
+      void *bin = len > 0 ? malloc((size_t)len) : NULL;
+      FILE *f = bin ? fopen(dump, "wb") : NULL;
+      if (f) {
+         GLenum format = 0;
+         glGetProgramBinary(p, len, NULL, &format, bin);
+         fwrite(bin, 1, (size_t)len, f);
+         fclose(f);
+         fprintf(stderr, "glwork bench: %d-byte program binary, format 0x%x, written to %s\n", len, format, dump);
+      } else {
+         fprintf(stderr, "glwork bench: no program binary (length %d)\n", len);
+      }
+      free(bin);
+   }
+   return 0;
+}
+
 int main(int argc, char **argv)
 {
    const char *mode = argc > 1 ? argv[1] : "clear";
@@ -224,6 +343,9 @@ int main(int argc, char **argv)
       glBufferData(GL_SHADER_STORAGE_BUFFER, 64 * 4, NULL, GL_DYNAMIC_COPY);
       glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 0, ssbo);
    }
+
+   if (!strcmp(mode, "bench"))
+      return bench(argc, argv);
 
    int r = scene(mode, fbo[0]);
    if (r >= 0)
