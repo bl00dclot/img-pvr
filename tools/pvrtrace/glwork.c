@@ -66,10 +66,13 @@ static uint32_t readsum(GLenum attachment, int w, int h)
 static int scene(const char *mode, GLuint resolve_fbo)
 {
    int depth = !strcmp(mode, "depth"), msaa = !strcmp(mode, "msaa"), mrt = !strcmp(mode, "mrt");
-   int big = !strcmp(mode, "big");
-   if (!depth && !msaa && !mrt && !big)
+   /* tfill, dfill: fill with one texture read at a position-derived coordinate, and with a second
+    * read whose coordinate depends on the first (GPU job timing of texture reads). */
+   int tfill = !strcmp(mode, "tfill"), dfill = !strcmp(mode, "dfill");
+   int big = !strcmp(mode, "big"), fill = !strcmp(mode, "fill") || tfill || dfill;
+   if (!depth && !msaa && !mrt && !big && !fill)
       return -1;
-   int size = big ? BIG : W, colours = mrt ? 3 : 1;
+   int size = big || fill ? BIG : W, colours = mrt ? 3 : 1;
 
    GLuint fbo, rb[4];
    glGenFramebuffers(1, &fbo);
@@ -103,6 +106,12 @@ static int scene(const char *mode, GLuint resolve_fbo)
       fs = "#version 300 es\nprecision highp float;layout(location=0) out vec4 o0;layout(location=1) out vec4 o1;"
            "layout(location=2) out vec4 o2;"
            "void main(){o0=vec4(0.25,0.5,0.75,1);o1=vec4(1,0,1,1);o2=vec4(0,1,1,0);}";
+   if (tfill)
+      fs = "#version 300 es\nprecision highp float;uniform sampler2D t;uniform vec4 col;out vec4 o;"
+           "void main(){o=texture(t,gl_FragCoord.xy/512.0)+col;}";
+   if (dfill)
+      fs = "#version 300 es\nprecision highp float;uniform sampler2D t;uniform vec4 col;out vec4 o;"
+           "void main(){vec2 uv=gl_FragCoord.xy/512.0;o=texture(t,fract(texture(t,uv).xy+uv))+col;}";
    if (big) {
       /* Triangle t covers half of a 2x2-cell square at cell t % 4096 of a 64x64 grid of 8-pixel cells, so
        * every pixel is covered, by 512 triangles per cell; its colour comes from t, so draw order shows. */
@@ -136,7 +145,7 @@ static int scene(const char *mode, GLuint resolve_fbo)
          glDrawArrays(GL_TRIANGLES, 0, 3);
       } else {
          glClear(GL_COLOR_BUFFER_BIT);
-         if (msaa) {
+         if (msaa || fill) {
             glUniform1f(zloc, 0.0f);
             glUniform4f(cloc, 0.25f, 0.5f, 0.75f, 1.0f);
          }

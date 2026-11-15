@@ -10,7 +10,10 @@
 //          parameter buffer out and force partial renders. Should give 173277184, the checksum of
 //          `glwork big` on the vendor driver (not part of all).
 //
-//   vkdraw /path/to/libvulkan_powervr.so [clear|draw|all|big] [iterations]
+//   fill   the draw mode's triangle over the whole 512x512 image: the cost of one plain full-screen
+//          pass, for GPU job timing against `glwork fill` (not part of all). Sum 167247872.
+//
+//   vkdraw /path/to/libvulkan_powervr.so [clear|draw|all|big|fill] [iterations]
 //
 // Build (armv7): $NDK/.../armv7a-linux-androideabi29-clang -O2 -Wall -Wextra -Werror \
 //   tools/vktest/vkdraw.c -ldl -o vkdraw.  vkdraw_vert_spv.h: glslangValidator -V --vn vkdraw_vert_spv \
@@ -106,7 +109,7 @@ int main(int argc, char **argv)
    const char *mode = argc > 2 ? argv[2] : "all";
    int iterations = argc > 3 ? atoi(argv[3]) : 1;
    int all = !strcmp(mode, "all");
-   int big = !strcmp(mode, "big");
+   int big = !strcmp(mode, "big") || !strcmp(mode, "fill");
    if ((!all && !big && strcmp(mode, "clear") && strcmp(mode, "draw")) || iterations < 1) {
       fprintf(stderr, "vkdraw: bad mode %s or iteration count\n", mode);
       return 2;
@@ -262,13 +265,14 @@ int main(int argc, char **argv)
                                         .pViewportState = &vps, .pRasterizationState = &rs,
                                         .pMultisampleState = &ms, .pColorBlendState = &cbs, .layout = pl,
                                         .renderPass = rp, .subpass = 0 };
-   VkPipeline pipe, big_pipe;
+   VkPipeline pipe, big_pipe, fill_pipe;
    CHECK(vkCreateGraphicsPipelines(dev, VK_NULL_HANDLE, 1, &gpi, NULL, &pipe));
-   stages[0].module = shader(vkdraw_big_vert_spv, sizeof(vkdraw_big_vert_spv));
-   stages[1].module = shader(vkdraw_big_frag_spv, sizeof(vkdraw_big_frag_spv));
    vp = (VkViewport){ 0, 0, BIG, BIG, 0, 1 };
    VkRect2D big_sc = { { 0, 0 }, { BIG, BIG } };
    vps.pScissors = &big_sc;
+   CHECK(vkCreateGraphicsPipelines(dev, VK_NULL_HANDLE, 1, &gpi, NULL, &fill_pipe));
+   stages[0].module = shader(vkdraw_big_vert_spv, sizeof(vkdraw_big_vert_spv));
+   stages[1].module = shader(vkdraw_big_frag_spv, sizeof(vkdraw_big_frag_spv));
    CHECK(vkCreateGraphicsPipelines(dev, VK_NULL_HANDLE, 1, &gpi, NULL, &big_pipe));
 
    VkCommandPoolCreateInfo cpci = { .sType = VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO,
@@ -285,11 +289,11 @@ int main(int argc, char **argv)
    CHECK(vkCreateFence(dev, &fci, NULL, &fence));
 
    int fails = 0;
-   for (int m = 0; m < 3; m++) {
-      const char *name = m == 2 ? "big" : m ? "draw" : "clear";
-      if ((!all && strcmp(mode, name)) || (all && m == 2))
+   for (int m = 0; m < 4; m++) {
+      const char *name = m == 3 ? "fill" : m == 2 ? "big" : m ? "draw" : "clear";
+      if ((!all && strcmp(mode, name)) || (all && m >= 2))
          continue;
-      const uint32_t w = m == 2 ? BIG : W, h = m == 2 ? BIG : H;
+      const uint32_t w = m >= 2 ? BIG : W, h = m >= 2 ? BIG : H;
       for (int it = 0; it < iterations; it++) {
          for (uint32_t i = 0; i < w * h; i++)
             px[i] = 0;
@@ -301,12 +305,13 @@ int main(int argc, char **argv)
          if (m)
             cv = (VkClearValue){ .color.float32 = { 0, 0, 0, 0 } };
          VkRenderPassBeginInfo rbi = { .sType = VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO, .renderPass = rp,
-                                       .framebuffer = fb, .renderArea = m == 2 ? big_sc : sc,
+                                       .framebuffer = fb, .renderArea = m >= 2 ? big_sc : sc,
                                        .clearValueCount = 1,
                                        .pClearValues = &cv };
          vkCmdBeginRenderPass(cb, &rbi, VK_SUBPASS_CONTENTS_INLINE);
          if (m) {
-            vkCmdBindPipeline(cb, VK_PIPELINE_BIND_POINT_GRAPHICS, m == 2 ? big_pipe : pipe);
+            vkCmdBindPipeline(cb, VK_PIPELINE_BIND_POINT_GRAPHICS,
+                              m == 3 ? fill_pipe : m == 2 ? big_pipe : pipe);
             vkCmdDraw(cb, m == 2 ? BIG_TRIS * 3 : 3, 1, 0, 0);
          }
          vkCmdEndRenderPass(cb);
@@ -324,14 +329,15 @@ int main(int argc, char **argv)
          CHECK(vkResetFences(dev, 1, &fence));
          CHECK(vkQueueSubmit(queue, 1, &si, fence));
          // 2 s (20 s for big): far beyond these renders; a timeout means the GPU did not complete it.
-         CHECK(vkWaitForFences(dev, 1, &fence, VK_TRUE, m == 2 ? 20000000000ull : 2000000000ull));
-         if (m == 2) {
+         CHECK(vkWaitForFences(dev, 1, &fence, VK_TRUE, m >= 2 ? 20000000000ull : 2000000000ull));
+         if (m >= 2) {
             uint32_t sum = 0;
             for (uint32_t i = 0; i < w * h; i++)
                sum += (px[i] & 0xff) + (px[i] >> 8 & 0xff) + (px[i] >> 16 & 0xff) + (px[i] >> 24);
-            printf("vkdraw big iteration %d: sum %u (expected 173277184) -> %s\n", it, sum,
-                   sum == 173277184u ? "ok" : "FAIL");
-            fails += sum != 173277184u;
+            const uint32_t want = m == 2 ? 173277184u : 167247872u;
+            printf("vkdraw %s iteration %d: sum %u (expected %u) -> %s\n", name, it, sum, want,
+                   sum == want ? "ok" : "FAIL");
+            fails += sum != want;
          } else {
             fails += report(name, it, px);
          }
