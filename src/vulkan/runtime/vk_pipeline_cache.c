@@ -570,7 +570,18 @@ find_ops_for_type(const struct vk_physical_device *pdevice,
    if (import_ops == NULL || type < 0)
       return NULL;
 
-   return import_ops[type];
+   /* XCLIPSE: the type is read from the cache data, which is untrusted (an
+    * application can pass any bytes as pInitialData behind a matching header):
+    * the table is NULL terminated, never index it by the value. A type found
+    * out of range crashed the driver (seen with a forged container whose
+    * object sizes lie).
+    */
+   for (int32_t i = 0; import_ops[i]; i++) {
+      if (i == type)
+         return import_ops[i];
+   }
+
+   return NULL;
 }
 
 static void

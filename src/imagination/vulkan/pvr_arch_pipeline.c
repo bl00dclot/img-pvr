@@ -1284,8 +1284,18 @@ static VkResult pvr_compute_pipeline_compile(
    pvr_compute_pipeline_key(device, pCreateInfo, compute_pipeline, key);
 
    bool mem_hit = false;
+   bool bad_hit = false;
    if (cache && !bypass)
       cached = pvr_cached_shaders_lookup(cache, key, &mem_hit);
+
+   /* XCLIPSE: an untrusted hit that does not fit this pipeline is a miss, see
+    * the graphics path.
+    */
+   if (cached && !pvr_cached_shaders_check_compute(cached, layout)) {
+      pvr_cached_shaders_unref(device, cached);
+      cached = NULL;
+      bad_hit = true;
+   }
 
    /* XCLIPSE: found in the cache (memory or disk): no shader is compiled.
     * VK_EXT_pipeline_creation_feedback only reports APPLICATION_PIPELINE_CACHE_HIT
@@ -1300,7 +1310,7 @@ static VkResult pvr_compute_pipeline_compile(
          return VK_PIPELINE_COMPILE_REQUIRED;
 
       result = pvr_compute_shaders_compile(device,
-                                           bypass ? NULL : cache,
+                                           (bypass || bad_hit) ? NULL : cache,
                                            pCreateInfo,
                                            compute_pipeline,
                                            key,
@@ -3907,8 +3917,30 @@ pvr_graphics_pipeline_compile(struct pvr_device *const device,
    pvr_graphics_pipeline_key(device, pCreateInfo, gfx_pipeline, state, key);
 
    bool mem_hit = false;
+   bool bad_hit = false;
    if (cache && !bypass)
       cached = pvr_cached_shaders_lookup(cache, key, &mem_hit);
+
+   /* XCLIPSE: cache contents are untrusted input (an application's
+    * VkPipelineCache data, a file in the disk cache). A hit that does not fit
+    * this pipeline (no VS flag, wrong FS presence, descriptor ranges that are
+    * not what this layout gives, ...) is a miss, and the compile result is
+    * not added under that key.
+    */
+   if (cached) {
+      const bool no_fs = gfx_pipeline->stage_indices[MESA_SHADER_FRAGMENT] == ~0;
+      const bool passthrough =
+         pvr_build_fs_passthrough(no_fs, &device->pdevice->dev_info);
+
+      if (!pvr_cached_shaders_check_graphics(cached,
+                                             layout,
+                                             !no_fs || passthrough,
+                                             passthrough)) {
+         pvr_cached_shaders_unref(device, cached);
+         cached = NULL;
+         bad_hit = true;
+      }
+   }
 
    /* XCLIPSE: found in the cache (memory or disk): no shader is compiled.
     * VK_EXT_pipeline_creation_feedback only reports APPLICATION_PIPELINE_CACHE_HIT
@@ -3923,7 +3955,7 @@ pvr_graphics_pipeline_compile(struct pvr_device *const device,
          return VK_PIPELINE_COMPILE_REQUIRED;
 
       result = pvr_graphics_shaders_compile(device,
-                                            bypass ? NULL : cache,
+                                            (bypass || bad_hit) ? NULL : cache,
                                             pCreateInfo,
                                             gfx_pipeline,
                                             state,
