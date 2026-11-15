@@ -380,6 +380,7 @@ static void io_fs(struct pvr_cache_io *io, pco_fs_data *fs)
    IO_RANGE(fs->meta);
    IO_BOOL(fs->meta_is_static);
    IO_INT(fs->meta_static, ~0u);
+   IO_BOOL(fs->single_sampled);
 
    /* ~0 when there is no Z replicate. */
    IO_ENUM(fs->z_replicate, ~0u);
@@ -547,9 +548,9 @@ static bool io_xfb(struct pvr_cache_io *io, void *mem_ctx, nir_xfb_info **xfb)
  * until the walkers are looked at.
  */
 #if UINTPTR_MAX == 0xffffffffu
-static_assert(sizeof(pco_data) == 3096, "pco_data changed: update io_*()");
+static_assert(sizeof(pco_data) == 3100, "pco_data changed: update io_*()");
 #else
-static_assert(sizeof(pco_data) == 3152, "pco_data changed: update io_*()");
+static_assert(sizeof(pco_data) == 3160, "pco_data changed: update io_*()");
 #endif
 static_assert(sizeof(nir_xfb_info) == 24, "nir_xfb_info changed: update io_xfb()");
 

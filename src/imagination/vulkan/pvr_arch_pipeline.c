@@ -1000,7 +1000,7 @@ static void pvr_pipeline_destroy_shader_data(pco_data *data, bool vs);
  * Anything the compile starts to read must be added here, or the cache
  * returns stale shaders.
  */
-#define PVR_CACHE_KEY_VERSION 1u
+#define PVR_CACHE_KEY_VERSION 2u
 
 static void pvr_hash_u32(struct mesa_blake3 *ctx, uint32_t v)
 {
