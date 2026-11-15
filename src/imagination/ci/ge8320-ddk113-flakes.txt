@@ -1,2 +1,4 @@
 # GE8320 on DDK 1.13: tests that passed and failed across reruns in the L7 subset runs.
+# Seen failing once in the first renderpass run (two jobs in parallel) and passing in every later run: 20 of 20
+# single-process runs and the whole-list runs of the correctness lane. A flake by one observation, not reproduced.
 dEQP-VK.renderpass.suballocation.multisample_resolve.r8g8_uint.max_attachments_4_samples_2
