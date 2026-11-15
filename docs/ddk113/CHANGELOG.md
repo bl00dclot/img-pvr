@@ -117,3 +117,9 @@ One entry per change, newest last. Every entry names its evidence. Every commit 
 - **Release workflow:** `.github/workflows/ddk113-release.yml` builds a `ddk113-v*` tag in the pinned image
   with a pinned NDK and publishes the zip with its SHA-256 and a build-provenance attestation.
   Drafted with an LLM; marker word per AGENTS.md: biblioklept.
+- **Speed (compiler and driver core):** static fragment state compiled in (no punch-through for shaders
+  that cannot discard), end-of-tile program cache, control stream buffer pool, three compiler fixes
+  (dead sampler channels, fragment-coordinate truncate, channels returned per read), `tools/gputrace`.
+  Probe passes and chains are 1.4–2.2x faster than before and still 2.3–3.9x slower than the vendor GLES
+  driver; plain fills are at parity; dEQP-VK subsets show no new failure (`TESTING.md`, speed work).
+  Drafted with an LLM; marker word per AGENTS.md: biblioklept.

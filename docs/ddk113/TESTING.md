@@ -217,3 +217,56 @@ medians, GLES / Vulkan: T1 0.736 / 3.908 ms per pass, T2 10.20 / 37.96 and 4.99 
 T3 5.03 / 29.29 and 4.39 / 21.36 ms per chain, T4 90.9 / 64.8 ms per frame.
 
 Drafted with an LLM; marker word per AGENTS.md: biblioklept.
+
+### 2026-11-15: speed work (why Vulkan was slower, and what was fixed)
+
+Method: the probe built as a native executable and run as root; real GPU job times from the kernel
+driver's `rogue` ftrace events (`tools/gputrace`: firmware timestamps at the begin and end of each TA and 3D
+job, about 1.45x wall ms on this phone); CPU profiles with simpleperf; Mesa's compiled shaders with
+`PCO_DEBUG_PRINT`. Game closed, HWR counters unchanged by every run below.
+
+**Findings, in the order they were measured:**
+
+1. The gap was mostly GPU time in the 3D (fragment) job, not CPU: T1 5.44 against 1.12 for the vendor's
+   GLES driver, T2 90.3 against 15.3, T3 2.34 against 0.85; TA times were alike.
+2. Every application fragment shader was a punch-through object: the compiler always added a sample-mask
+   check that can discard, hence ISP feedback, plus runtime tests for alpha-to-coverage and alpha-to-one.
+   Upstream Mesa main does the same. Fixed for pipelines with one sample per pixel and no dynamic
+   multisample or colour-write state (`pco_fs_data::meta_is_static`). A 512x512 constant-colour pass:
+   1.29 before, **0.41 after, vendor 0.47**.
+3. Per render, the end-of-tile program was recompiled (24 % of the CPU time of a loop of small renders) and
+   a control stream buffer was allocated and freed through the kernel (about 25 % in a pass-heavy frame).
+   Both are now cached or pooled per device.
+4. Compiler waste: 14 dead register moves per sampler fed by a varying, a 7-group truncate per fragment
+   coordinate component, and samplers always returning 4 float channels. Each returned 32-bit channel costs
+   3D time per fragment (T3's job: 1.71 with 4 channels, 1.37 with the 3 it reads, 1.18 with 1). The
+   vendor driver's texture reads are nearly free (`glwork fill` / `tfill` / `dfill`: 0.49 / 0.49 / 0.53).
+5. Not the cause: GPU clock (pinning the governor's floor to 680 MHz changed no Vulkan number), memory
+   allocation flags (same GPU cache mode as the vendor), the `DISABLE_PIXELMERGE` render flag (clearing it
+   with `pvrtrace -e 3D:0x130=0` helps only T2, by 16 %; left set).
+
+**Result** (native runs, 60 frames, wall time; pixel sums identical before and after every change):
+
+| Test | GLES | Vulkan before | Vulkan after | after / GLES |
+|---|---|---|---|---|
+| T1 ms per pass | 0.73 | 3.87 | 2.16 | 3.0x slower |
+| T2 individual, ms per 1,000 draws | 11.1 | 37.6 | 27.1 | 2.4x slower |
+| T2 instanced, ms per 1,000 draws | 4.97 | 30.0 | 19.6 | 3.9x slower |
+| T3 separate, ms per chain | 5.0 | 29.9 | 13.3 | 2.7x slower |
+| T3 tile-local, ms per chain | 5.65 | 21.6 | 13.1 | 2.3x slower |
+| T4 uploads, ms per frame | 77–87 | 62 | 62 | 1.2–1.4x faster |
+
+Plain passes without texture reads are at the vendor's speed; passes dominated by texture reads, blending
+on loaded contents (T1) and discard (T2) are not.
+
+**dEQP-VK after the changes** (same subsets and fractions as L7, `--baseline` the committed fails file):
+renderpass, draw, api, synchronization and compute all exit 0: no new failure, the same 226 expected
+failures in those subsets, the earlier flake passed. GPU recoveries during the run: renderpass 3D +144
+(was +288), api TA +23 and 3D +369 (was +46 and +736), synchronization CDM +1.
+
+**Open, in order of expected gain:** the cost of texture reads (the vendor can take one packed word per
+texel because GLSL ES samplers default to low precision; here it needs format-specialised or
+relaxed-precision sampling), the attachment load shader and float blending in T1, the punch-through path
+and pixel merging in T2, and the kernel kick (about 15 % of CPU per render).
+
+Drafted with an LLM; marker word per AGENTS.md: biblioklept.
