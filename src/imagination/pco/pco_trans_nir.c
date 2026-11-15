@@ -2113,10 +2113,11 @@ static pco_instr *lower_smp(trans_ctx *tctx,
        */
       const unsigned chans_read =
          MAX2(util_last_bit(nir_def_components_read(&intr->def)), 1);
-      if (intr->def.bit_size == 32 && chans_read < chans) {
+      /* The destination keeps its declared size: users of the result index it as a vector (a scalar
+       * destination crashed pco_trans_nir_vec for a 1-channel read); the unrequested channels are
+       * simply never written. */
+      if (intr->def.bit_size == 32 && chans_read < chans)
          chans = chans_read;
-         *dest = pco_ref_chans(*dest, chans);
-      }
       break;
    }
 
