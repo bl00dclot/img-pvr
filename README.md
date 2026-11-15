@@ -70,6 +70,25 @@ It then builds `libvulkan_powervr_mesa.so` for each architecture into `build-arm
 to `dist/`. Each zip holds `meta.json`, `libvulkan_powervr.so` and `NOTICE.txt`, the layout
 Android launchers with custom driver support import.
 
+## Using the driver in an app
+
+Android's loader does not pick this driver up: it only takes Vulkan drivers from the vendor partition or an
+APEX, and the phone has no HAL for it. An app therefore carries the driver and loads it itself:
+
+1. Ship `libvulkan_powervr.so` from the release zip in the app's native libraries (`extractNativeLibs="true"`
+   and `useLegacyPackaging true`, so it lands in `nativeLibraryDir` as a file), for the ABI the phone runs
+   (`armeabi-v7a` on the Redmi A2 and many other GE8320 phones).
+2. `dlopen` it, call `vk_icdNegotiateLoaderICDInterfaceVersion`, and fetch every function through
+   `vk_icdGetInstanceProcAddr`; there is no `libvulkan.so` in between. `tools/vktest/*.c` show this in C, and
+   `tools/vktest/vkshim.c` wraps it as a `vkGetInstanceProcAddr` library for code that expects a loader.
+3. The driver links against `libhardware.so`, which an app's linker namespace does not expose: ship a small
+   stand-in that exports `hw_get_module` and returns `-ENOENT` (headless and offscreen rendering never need it).
+4. Keep a GLES path as the fallback: if any step fails (no render node access, an older kernel driver, a
+   different GPU), the app should fall back to the vendor's OpenGL ES.
+
+The kernel driver version must match the build (`DDK=1.11` or `DDK=1.13`; the `-ddk113` zip is for 1.13).
+Details and the current state: [`docs/ddk113/`](docs/ddk113/README.md).
+
 ## Disclaimer
 
 This project was developed with heavy use of AI tools. Every change in the DDK 1.11 release was built and
