@@ -269,7 +269,7 @@ nir_intrinsic_instr *pco_emit_nir_smp(nir_builder *b, pco_smp_params *params)
       lod_present = true;
       comps[count++] = params->lod_replace;
 
-      smp_flags.pplod = true;
+      smp_flags.pplod = !params->lod_uniform;
       smp_flags.lod_mode = PCO_LOD_MODE_REPLACE;
    } else if (params->lod_ddx) {
       lod_present = true;
@@ -575,9 +575,20 @@ static bool lower_tex(nir_builder *b, nir_tex_instr *tex, void *cb_data)
       lod_set = true;
       BITSET_CLEAR(tex_src_set, nir_tex_src_bias);
    } else if (BITSET_TEST(tex_src_set, nir_tex_src_lod)) {
-      params.lod_replace = tex_src_is_float(tex, nir_tex_src_lod)
-                              ? tex_srcs[nir_tex_src_lod]
-                              : nir_i2f32(b, tex_srcs[nir_tex_src_lod]);
+      nir_def *lod = tex_srcs[nir_tex_src_lod];
+      params.lod_replace =
+         tex_src_is_float(tex, nir_tex_src_lod) ? lod
+         : nir_def_instr(lod)->type == nir_instr_type_load_const
+            ? nir_imm_float(b, (float)nir_scalar_as_int(nir_get_scalar(lod, 0)))
+            : nir_i2f32(b, lod);
+
+      /* XCLIPSE: a texelFetch with a constant LOD needs no per-pixel LOD. On a GE8320 per-pixel
+       * LOD made a full-screen texelFetch 3.4x slower (0.98 ms against 0.29 ms per 512x512 pass).
+       * Limited to texelFetch: the same flag on input-attachment reads rendered a wrong image and
+       * caused GPU recoveries.
+       */
+      params.lod_uniform = (tex->op == nir_texop_txf || tex->op == nir_texop_txf_ms) &&
+                           nir_def_instr(lod)->type == nir_instr_type_load_const;
 
       lod_set = true;
       BITSET_CLEAR(tex_src_set, nir_tex_src_lod);

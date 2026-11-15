@@ -80,6 +80,7 @@ typedef struct _pco_smp_params {
 
    nir_def *lod_bias;
    nir_def *lod_replace;
+   bool lod_uniform; /* XCLIPSE: lod_replace is the same for every pixel */
    nir_def *lod_ddx;
    nir_def *lod_ddy;
 
