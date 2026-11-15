@@ -266,3 +266,30 @@ relaxed-precision sampling), the attachment load shader and float blending in T1
 and pixel merging in T2, and the kernel kick (about 15 % of CPU per render).
 
 Drafted with an LLM; marker word per AGENTS.md: biblioklept.
+
+### 2026-11-16: blending and the attachment load (lane blend)
+
+Method: `vkbench` modes `blend` (LOAD op, alpha blend), `load` (LOAD op, no blend) and `blendc` (blend over a
+CLEAR), median 3D job per 512x512 pass over 20 passes, three runs, GPU at the 400 MHz level. Before the fix
+(fork `bf89cfc`): `fill` 0.238, `load` 0.238, `blendc` 0.419, `blend` 0.823 ms; vendor GLES `fill` 0.311,
+`blend` 0.513.
+
+- The load alone is free when nothing reads the tile (`load` equals `fill`), and blending alone costs
+  0.18 ms (`blendc`); the loaded blend costs 0.40 ms more than that, so the cost is in the load program, not in
+  the blend shader (9 instruction groups against `fill`'s 6, and nothing to cut).
+- The load program (`pvr_uscgen_loadop`) was 16 groups; 12 of them tested the coverage mask (`pck.cov`, shift,
+  test, `csel`), twice, to choose between the pixel and the sample x/y. A single-sampled load never runs per
+  sample, so the translator now reads the pixel registers directly (`pco_fs_data.single_sampled`). The program
+  is 6 groups. `blend` 0.823 -> 0.582 ms (three runs 0.582); `fill`, `load`, `blendc` unchanged; image sums
+  unchanged.
+- Probe T1 (1024x448, 64 passes, three alternating runs per driver, firmware ms of 3D time per pass): 3.382 ->
+  2.666 (wall 2.18 -> 1.76 ms); without the load (`PROBE_VARIANT=dc`) 2.094 and without the blend (`nb`) 1.208,
+  both unchanged. The load now costs 0.57 ms per pass instead of 1.29.
+- Measured and rejected: a constant uniform LOD on the load read (0.582 -> 0.605); half-float return (no
+  change, 0.582); a load program that reads nothing and only stores (0.417, the floor: the load machinery
+  itself is free, the remaining 0.165 ms over `blendc` is the texture read plus its conversion); raw return
+  (`rawdata`) of the texels, 0.493 ms, but that mode is a gather and returns the four texels around the
+  coordinate, so the image is wrong and varies between runs (neighbouring tiles); reading the RGBA8 target
+  through an R32_UINT view of the same memory (one word, no conversion) timed 0.49 ms but returned wrong data
+  (image sum 84148224 against 133431296) with and without a uniform LOD and with integer coordinates; cause not
+  found.
