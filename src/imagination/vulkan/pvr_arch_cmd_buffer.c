@@ -634,12 +634,14 @@ static bool pvr_eot_cache_get(struct pvr_device *const device,
 {
    struct pvr_device_eot_cache *const cache = &device->eot_cache;
    struct pvr_eot_cache_entry *eot = NULL;
-   struct pvr_eot_cache_key key = {
-      .emit_count = props->emit_count,
-      .msaa_samples = props->msaa_samples,
-      .num_output_regs = props->num_output_regs,
-   };
+   struct pvr_eot_cache_key key;
    bool found = false;
+
+   /* The key is hashed and compared as bytes: no uninitialised padding. */
+   memset(&key, 0, sizeof(key));
+   key.emit_count = props->emit_count;
+   key.msaa_samples = props->msaa_samples;
+   key.num_output_regs = props->num_output_regs;
 
    assert(!props->shared_words);
    assert(props->emit_count <= ARRAY_SIZE(key.state_words));
@@ -677,14 +679,20 @@ static bool pvr_eot_cache_get(struct pvr_device *const device,
    if (!eot)
       goto out_unlock;
 
-   eot->key = key;
+   memcpy(&eot->key, &key, sizeof(key));
 
    if (pvr_eot_cache_entry_init(device, props, eot) != VK_SUCCESS) {
       vk_free(&device->vk.alloc, eot);
       goto out_unlock;
    }
 
-   _mesa_hash_table_insert(cache->ht, &eot->key, eot);
+   if (!_mesa_hash_table_insert(cache->ht, &eot->key, eot)) {
+      pvr_bo_suballoc_free(eot->pds.pvr_bo);
+      pvr_bo_suballoc_free(eot->usc_bo);
+      vk_free(&device->vk.alloc, eot);
+      goto out_unlock;
+   }
+
    found = true;
 
 out_unlock:

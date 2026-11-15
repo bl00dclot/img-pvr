@@ -129,6 +129,9 @@ bool pvr_csb_bo_pool_put(struct pvr_device *device, struct pvr_bo *pvr_bo)
    if (pvr_bo->bo->size != PVR_CMD_BUFFER_CSB_BO_SIZE || !pvr_bo->bo->map)
       return false;
 
+   /* A fresh buffer is zero-filled by the kernel; hand out recycled ones the same way. */
+   memset(pvr_bo->bo->map, 0, pvr_bo->bo->size);
+
    simple_mtx_lock(&pool->mtx);
    if (pool->count < PVR_CSB_BO_POOL_MAX) {
       list_add(&pvr_bo->link, &pool->bos);

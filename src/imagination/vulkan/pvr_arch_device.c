@@ -680,8 +680,6 @@ static void pvr_device_init_csb_bo_pool(struct pvr_device *device)
 
 static void pvr_device_finish_csb_bo_pool(struct pvr_device *device)
 {
-   simple_mtx_destroy(&device->csb_bo_pool.mtx);
-
    list_for_each_entry_safe (struct pvr_bo,
                              pvr_bo,
                              &device->csb_bo_pool.bos,
@@ -689,6 +687,8 @@ static void pvr_device_finish_csb_bo_pool(struct pvr_device *device)
       list_del(&pvr_bo->link);
       pvr_bo_free(device, pvr_bo);
    }
+
+   simple_mtx_destroy(&device->csb_bo_pool.mtx);
 }
 
 static void pvr_device_init_eot_cache(struct pvr_device *device)

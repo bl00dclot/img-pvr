@@ -2113,7 +2113,7 @@ static pco_instr *lower_smp(trans_ctx *tctx,
        */
       const unsigned chans_read =
          MAX2(util_last_bit(nir_def_components_read(&intr->def)), 1);
-      if (chans_read < chans) {
+      if (intr->def.bit_size == 32 && chans_read < chans) {
          chans = chans_read;
          *dest = pco_ref_chans(*dest, chans);
       }

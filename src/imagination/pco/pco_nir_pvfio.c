@@ -1319,8 +1319,7 @@ opt_frag_coord_trunc(nir_builder *b, nir_alu_instr *alu, UNUSED void *cb_data)
  * every `texelFetch(s, ivec2(gl_FragCoord.xy), 0)`.
  *
  * \param[in,out] shader NIR shader.
- * 
-eturn True if the pass made progress.
+ * \return True if the pass made progress.
  */
 bool pco_nir_opt_frag_coord_trunc(nir_shader *shader)
 {

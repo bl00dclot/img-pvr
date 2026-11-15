@@ -231,7 +231,7 @@ job, about 1.45x wall ms on this phone); CPU profiles with simpleperf; Mesa's co
    GLES driver, T2 90.3 against 15.3, T3 2.34 against 0.85; TA times were alike.
 2. Every application fragment shader was a punch-through object: the compiler always added a sample-mask
    check that can discard, hence ISP feedback, plus runtime tests for alpha-to-coverage and alpha-to-one.
-   Upstream Mesa main does the same. Fixed for pipelines with one sample per pixel and no dynamic
+   A copy of upstream Mesa main read on 2026-11-15 (a public mirror) still adds that check to every shader. Fixed for pipelines with one sample per pixel and no dynamic
    multisample or colour-write state (`pco_fs_data::meta_is_static`). A 512x512 constant-colour pass:
    1.29 before, **0.41 after, vendor 0.47**.
 3. Per render, the end-of-tile program was recompiled (24 % of the CPU time of a loop of small renders) and

@@ -21,6 +21,16 @@ old_on=$(cat $T/tracing_on)
 old_kb=$(head -1 $T/buffer_size_kb)
 old_clock=$(sed 's/.*\[\(.*\)\].*/\1/' $T/trace_clock)
 old_ft=$(cat /proc/pvr/apphint/EnableFTraceGPU)
+restore() {
+  echo 0 > $T/tracing_on
+  echo 0 > $T/events/rogue/rogue_sched_switch/enable
+  echo 0 > $T/events/rogue/rogue_job_enqueue/enable
+  echo "$old_ft" > /proc/pvr/apphint/EnableFTraceGPU
+  echo "$old_clock" > $T/trace_clock
+  echo "${old_kb%% *}" > $T/buffer_size_kb 2>/dev/null
+  echo "$old_on" > $T/tracing_on
+}
+trap 'restore; exit 130' INT TERM
 echo 0 > $T/tracing_on
 echo mono > $T/trace_clock   # the probe's MARK lines use CLOCK_MONOTONIC
 echo > $T/trace
@@ -32,12 +42,7 @@ echo 1 > $T/tracing_on
 "$@"
 status=$?
 echo 0 > $T/tracing_on
-echo 0 > $T/events/rogue/rogue_sched_switch/enable
-echo 0 > $T/events/rogue/rogue_job_enqueue/enable
-echo "$old_ft" > /proc/pvr/apphint/EnableFTraceGPU
 cat $T/trace > "$out"
 echo > $T/trace
-echo "$old_clock" > $T/trace_clock
-echo "$old_kb" > $T/buffer_size_kb 2>/dev/null
-echo "$old_on" > $T/tracing_on
+restore
 exit $status
