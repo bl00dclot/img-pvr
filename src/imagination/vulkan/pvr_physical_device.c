@@ -1097,8 +1097,11 @@ static void pvr_physical_device_set_android_cache_dir(void)
    name[len] = '\0';
    name[strcspn(name, ":")] = '\0';
 
-   /* A package name: has a dot, no slash. */
-   if (!strchr(name, '.') || strchr(name, '/'))
+   /* XCLIPSE: a package name: [A-Za-z0-9._], a dot in it and none first, so
+    * the process name (untrusted: any app can pick it) is a single path
+    * component that cannot be "." or ".." or a path.
+    */
+   if (!pvr_cache_dir_name_valid(name))
       return;
 
    snprintf(dir, sizeof(dir), "/data/data/%s/cache", name);

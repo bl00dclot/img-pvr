@@ -6355,8 +6355,14 @@ static VkResult pvr_setup_descriptor_mappings(
                cmd_buffer->state.gfx_pipeline;
             const pco_data *const fs_data = &gfx_pipeline->fs_data;
 
+            /* XCLIPSE: the stride is 2 (checked for pipelines made from a
+             * cache hit); never read more buffers than the device has
+             * allocated, whatever the shader data says.
+             */
             unsigned num_tile_buffers =
-               fs_data->fs.tile_buffers.count / fs_data->fs.tile_buffers.stride;
+               MIN2(fs_data->fs.tile_buffers.count /
+                       fs_data->fs.tile_buffers.stride,
+                    tile_buffer_state->buffer_count);
 
             uint32_t tile_buffer_addrs[PVR_MAX_TILE_BUFFER_COUNT * 2];
 

@@ -21,6 +21,7 @@
 #include "vk_pipeline_cache.h"
 
 struct pvr_device;
+struct vk_pipeline_layout;
 
 #define PVR_CACHED_KEY_SIZE BLAKE3_OUT_LEN
 
@@ -31,6 +32,9 @@ struct pvr_device;
 #define PVR_CACHED_HAS_STAGE1 BITFIELD_BIT(1)
 #define PVR_CACHED_STAGE0_IS_VS BITFIELD_BIT(2)
 #define PVR_CACHED_FS_PASSTHROUGH BITFIELD_BIT(3)
+/* Slot 0 carries a nir_xfb_info (VS only). */
+#define PVR_CACHED_HAS_XFB BITFIELD_BIT(4)
+#define PVR_CACHED_ALL_FLAGS BITFIELD_MASK(5)
 
 struct pvr_cached_stage {
    pco_data data; /* Pointers inside point into the owning object. */
@@ -75,6 +79,28 @@ struct pvr_cached_shaders *
 pvr_cached_shaders_lookup(struct vk_pipeline_cache *cache,
                           const uint8_t key[PVR_CACHED_KEY_SIZE],
                           bool *cache_hit);
+
+/* XCLIPSE: everything in a cache object is untrusted input (a
+ * VkPipelineCache blob from the app or a file in the disk cache; the CRC only
+ * catches accidents). The deserializer checks every field that is context free
+ * (bounds, enums, flags, sizes) and never keeps a pointer from the data. These
+ * two check what only the pipeline being created knows (layout, whether it has
+ * a fragment shader) before a hit is used; false means treat it as a miss,
+ * compile, and do not add the result to the cache (the entry under that key is
+ * the bad one).
+ */
+bool pvr_cached_shaders_check_graphics(const struct pvr_cached_shaders *obj,
+                                       const struct vk_pipeline_layout *layout,
+                                       bool has_fs,
+                                       bool fs_passthrough);
+
+bool pvr_cached_shaders_check_compute(const struct pvr_cached_shaders *obj,
+                                      const struct vk_pipeline_layout *layout);
+
+/* Android disk cache directory: the process name is used as a path component,
+ * so only [A-Za-z0-9._] with no leading '.' and at least one '.' is accepted.
+ */
+bool pvr_cache_dir_name_valid(const char *name);
 
 /* Consumes the caller's reference, returns the object now in the cache. */
 struct pvr_cached_shaders *
