@@ -135,3 +135,19 @@ libpowervr_compiler = static_library(
 )
 
 subdir('uscgen')
+
+# XCLIPSE: host compiler statistics harness, tools/pco-stats/README.md. Host build only (it needs the
+# usclib programs the precompiler builds); not built by default, `ninja src/imagination/pco/pco_stats`.
+if get_option('precomp-compiler') != 'system'
+  executable(
+    'pco_stats',
+    ['../../../tools/pco-stats/pco_stats.c'],
+    link_with : [libpowervr_compiler, libpowervr_common, libpowervr_uscgen],
+    include_directories : [inc_imagination, inc_include, inc_src],
+    c_args : [pre_args, no_override_init_args],
+    link_args : [ld_args_build_id],
+    dependencies : [idep_vtn, idep_nir, idep_mesautil, idep_pco_uscgen_programs_headers],
+    build_by_default : false,
+    native : not meson.can_run_host_binaries(),
+  )
+endif
