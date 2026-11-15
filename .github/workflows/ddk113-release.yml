@@ -1,5 +1,5 @@
 # Release build of the DDK 1.13 driver (docs/ddk113/README.md): runs only for a pushed ddk113-v* tag,
-# builds in the repository's pinned Docker image with a pinned NDK, publishes the zip with its SHA-256 and a
+# builds in the repository's pinned Docker image with a pinned NDK, publishes the zip and an SPDX SBOM with their SHA-256 and a
 # GitHub build-provenance attestation. No secrets beyond the job's own token. Drafted with an LLM; marker
 # word per AGENTS.md: biblioklept.
 name: ddk113 release
@@ -37,16 +37,25 @@ jobs:
       - name: Build (DDK 1.13, armv7)
         run: DDK=1.13 ARCHES=armv7 scripts/docker-build.sh "$RUNNER_TEMP/android-ndk-r27c"
 
+      - name: SBOM (SPDX, from the pinned values; scripts/gen-sbom.py)
+        run: |
+          set -euo pipefail
+          docker run --rm img-pvr-build:trixie dpkg-query -W -f '${Package} ${Version}\n' > "$RUNNER_TEMP/packages.txt"
+          python3 scripts/gen-sbom.py --ndk "$RUNNER_TEMP/android-ndk-r27c" --packages "$RUNNER_TEMP/packages.txt" \
+            $(printf -- '--zip %s ' dist/*-ddk113.zip) > dist/sbom.spdx.json
+
       - name: Checksums
         run: |
           set -euo pipefail
           cd dist
-          sha256sum -- *-ddk113.zip > SHA256SUMS
+          sha256sum -- *-ddk113.zip sbom.spdx.json > SHA256SUMS
           cat SHA256SUMS
 
       - uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
         with:
-          subject-path: dist/*-ddk113.zip
+          subject-path: |
+            dist/*-ddk113.zip
+            dist/sbom.spdx.json
 
       - name: Release
         env:
@@ -63,7 +72,8 @@ jobs:
             echo '```'
             cat dist/SHA256SUMS
             echo '```'
+            echo "sbom.spdx.json (SPDX): NDK, build-image digest and Debian packages, libdrm/expat/zlib hashes, source base."
             echo "Verify the provenance: gh attestation verify <zip> --repo $GITHUB_REPOSITORY"
           } > "$RUNNER_TEMP/notes.md"
-          gh release create "$TAG" --verify-tag dist/*-ddk113.zip dist/SHA256SUMS --prerelease --title "$TAG" \
+          gh release create "$TAG" --verify-tag dist/*-ddk113.zip dist/sbom.spdx.json dist/SHA256SUMS --prerelease --title "$TAG" \
             --notes-file "$RUNNER_TEMP/notes.md"

@@ -9,6 +9,7 @@ import os
 import re
 import subprocess
 import sys
+import time
 import zipfile
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -83,10 +84,21 @@ def main():
 
     os.makedirs(out_dir, exist_ok=True)
     zip_path = os.path.join(out_dir, 'img-pvr-%s%s-%s%s.zip' % (mesa_version, suffix, arch, ddk_suffix))
-    with zipfile.ZipFile(zip_path, 'w', zipfile.ZIP_DEFLATED) as z:
-        z.writestr('meta.json', json.dumps(meta, indent=2) + '\n')
-        z.write(lib, LIB)
-        z.write(os.path.join(ROOT, 'android', 'NOTICE.txt'), 'NOTICE.txt')
+    # Reproducible zip: fixed timestamp (SOURCE_DATE_EPOCH, else the HEAD commit time, else 1980) and
+    # fixed permissions, so the same inputs give the same bytes.
+    epoch = int(os.environ.get('SOURCE_DATE_EPOCH') or git('log', '-1', '--format=%ct') or 315532800)
+    stamp = time.gmtime(max(epoch, 315532800))[:6]
+
+    def add(z, name, data):
+        info = zipfile.ZipInfo(name, stamp)
+        info.compress_type = zipfile.ZIP_DEFLATED
+        info.external_attr = 0o644 << 16
+        z.writestr(info, data)
+
+    with zipfile.ZipFile(zip_path, 'w') as z:
+        add(z, 'meta.json', json.dumps(meta, indent=2) + '\n')
+        add(z, LIB, open(lib, 'rb').read())
+        add(z, 'NOTICE.txt', open(os.path.join(ROOT, 'android', 'NOTICE.txt'), 'rb').read())
     print('packaged %s (%.1f MB)' % (zip_path, os.path.getsize(zip_path) / 1e6))
 
 

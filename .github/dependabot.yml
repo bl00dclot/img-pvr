@@ -1,0 +1,9 @@
+# Keeps the SHA-pinned actions in .github/workflows current (it opens a PR that changes the SHA and the
+# version comment). The Docker base is left out on purpose: its digest moves together with the Debian
+# snapshot date in docker/Dockerfile (change both by hand).
+version: 2
+updates:
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly

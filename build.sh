@@ -41,6 +41,9 @@ case "$DDK" in
    *) echo "error: DDK must be 1.11 or 1.13" >&2; exit 1 ;;
 esac
 export PVR_DDK="$DDK"
+# Build timestamps (zip entries, anything that honours it) come from the commit, not the clock.
+SOURCE_DATE_EPOCH="${SOURCE_DATE_EPOCH:-$(git log -1 --format=%ct 2>/dev/null || echo 315532800)}"
+export SOURCE_DATE_EPOCH
 
 for tool in meson ninja python3 pkg-config flex bison; do
    if ! command -v "$tool" >/dev/null 2>&1; then
