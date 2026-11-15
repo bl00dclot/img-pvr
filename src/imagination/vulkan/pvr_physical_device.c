@@ -12,7 +12,10 @@
 
 #include "pvr_physical_device.h"
 
+#include <stdio.h>
+#include <string.h>
 #include <sys/sysmacros.h>
+#include <unistd.h>
 
 #include "git_sha1.h"
 
@@ -36,6 +39,7 @@
 #include "pvr_entrypoints.h"
 #include "pvr_instance.h"
 #include "pvr_macros.h"
+#include "pvr_pipeline_cache.h"
 #include "pvr_winsys.h"
 #include "pvr_wsi.h"
 
@@ -1071,10 +1075,53 @@ static bool pvr_physical_device_get_properties(
    return true;
 }
 
+#if DETECT_OS_ANDROID
+/* XCLIPSE: the driver is loaded by the app itself, so it runs as the app and
+ * /data/data/<package>/cache is writable. The package name is the process
+ * name (/proc/self/cmdline, up to a ':'). MESA_SHADER_CACHE_DIR, when set,
+ * wins; MESA_SHADER_CACHE_DISABLE=true turns the disk cache off. A process
+ * that is not an app (adb shell) has no such directory and gets no disk cache
+ * unless MESA_SHADER_CACHE_DIR is set.
+ */
+static void pvr_physical_device_set_android_cache_dir(void)
+{
+   char name[256] = { 0 };
+   char dir[320];
+   FILE *f = fopen("/proc/self/cmdline", "r");
+
+   if (!f)
+      return;
+
+   size_t len = fread(name, 1, sizeof(name) - 1, f);
+   fclose(f);
+   name[len] = '\0';
+   name[strcspn(name, ":")] = '\0';
+
+   /* A package name: has a dot, no slash. */
+   if (!strchr(name, '.') || strchr(name, '/'))
+      return;
+
+   snprintf(dir, sizeof(dir), "/data/data/%s/cache", name);
+   if (access(dir, W_OK | X_OK) == 0)
+      disk_cache_set_default_dir(dir);
+}
+#endif
+
+static const struct vk_pipeline_cache_object_ops *const
+   pvr_pipeline_cache_import_ops[] = {
+      &pvr_cached_shaders_ops,
+      NULL,
+   };
+
 static bool pvr_physical_device_setup_pipeline_cache(
    struct pvr_physical_device *const pdevice)
 {
+   pdevice->vk.pipeline_cache_import_ops = pvr_pipeline_cache_import_ops;
+
 #ifdef ENABLE_SHADER_CACHE
+#if DETECT_OS_ANDROID
+   pvr_physical_device_set_android_cache_dir();
+#endif
    const struct pvr_instance *instance = pdevice->instance;
    char device_id[BLAKE3_KEY_LEN * 2 + 1];
    char driver_id[BLAKE3_KEY_LEN * 2 + 1];

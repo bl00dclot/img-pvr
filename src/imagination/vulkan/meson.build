@@ -49,6 +49,7 @@ pvr_files = files(
   'pvr_instance.c',
   'pvr_nir_lower_ycbcr.c',
   'pvr_physical_device.c',
+  'pvr_pipeline_cache.c',
   'pvr_transfer_frag_store.c',
   'pvr_query.c',
   'pvr_robustness.c',

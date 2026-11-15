@@ -14,6 +14,16 @@
 //   alum   the same in mediump                 tvm    tv into a mediump result
 //   blend  fill blended (alpha 0.5) over the previous contents, loaded at the start of the pass
 //   load   fill, no blending, previous contents loaded   blendc  blend over a cleared target
+//
+// Pipeline cache test: with VKBENCH_CACHE=<file> the pipelines are created through a VkPipelineCache
+// that starts from <file> (if it exists) and is saved back to it (written atomically) at the end;
+// VKBENCH_CACHE_ALL=1 also creates every mode's pipeline, with and without blending. It prints, per run,
+// how many pipelines the driver reports as found in the cache (VK_EXT_pipeline_creation_feedback) and
+// the time vkCreateGraphicsPipelines took. Run it twice (new process each time): the second run should
+// report every pipeline as found in the cache, and the image sum must not change. VKBENCH_FEEDBACK=1 does the
+// same without a VkPipelineCache (the driver's device cache and, if MESA_SHADER_CACHE_DIR is set, its disk cache).
+// The feedback only says "found" for a pipeline found in the application's VkPipelineCache (as the spec has it), not
+// for one served from the device or disk cache: there the vkCreateGraphicsPipelines time is the evidence.
 // Prints the byte sum of the last iteration's image; it only has to be non-zero and repeatable.
 //
 // Build (armv7): $NDK/.../armv7a-linux-androideabi29-clang -O2 -Wall -Wextra -Werror
@@ -28,6 +38,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <time.h>
 
 #include "vkbench_spv.h"
 
@@ -54,7 +65,7 @@
    X(vkCmdCopyBufferToImage) X(vkCmdBindDescriptorSets) X(vkCreateSampler)                \
    X(vkCreateDescriptorSetLayout) X(vkCreateDescriptorPool) X(vkAllocateDescriptorSets)   \
    X(vkUpdateDescriptorSets) X(vkCreateFence) X(vkResetFences) X(vkQueueSubmit)           \
-   X(vkWaitForFences)
+   X(vkWaitForFences) X(vkCreatePipelineCache) X(vkGetPipelineCacheData)
 
 #define DECL(f) static PFN_##f f;
 FUNCS(DECL)
@@ -216,8 +227,10 @@ int main(int argc, char **argv)
    float prio = 1;
    VkDeviceQueueCreateInfo qci = { .sType = VK_STRUCTURE_TYPE_DEVICE_QUEUE_CREATE_INFO, .queueFamilyIndex = 0,
                                    .queueCount = 1, .pQueuePriorities = &prio };
+   const char *dev_exts[] = { "VK_EXT_pipeline_creation_feedback" };
    VkDeviceCreateInfo dci = { .sType = VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO, .queueCreateInfoCount = 1,
-                              .pQueueCreateInfos = &qci };
+                              .pQueueCreateInfos = &qci, .enabledExtensionCount = (getenv("VKBENCH_CACHE") || getenv("VKBENCH_FEEDBACK")) ? 1 : 0,
+                              .ppEnabledExtensionNames = dev_exts };
    CHECK(vkCreateDevice(pd, &dci, NULL, &dev));
 #define LOAD(f)                                                   \
    if (!(f = (PFN_##f)vkGetDeviceProcAddr(dev, #f))) {            \
@@ -390,7 +403,92 @@ int main(int argc, char **argv)
                                         .pMultisampleState = &ms, .pColorBlendState = &cbs, .layout = pl,
                                         .renderPass = rp, .subpass = 0 };
    VkPipeline pipe;
-   CHECK(vkCreateGraphicsPipelines(dev, VK_NULL_HANDLE, 1, &gpi, NULL, &pipe));
+   const char *cache_file = getenv("VKBENCH_CACHE");
+   /* VKBENCH_FEEDBACK=1: report cache hits without a VkPipelineCache (device cache and disk cache only). */
+   const int use_fb = cache_file || getenv("VKBENCH_FEEDBACK");
+   VkPipelineCache pcache = VK_NULL_HANDLE;
+   unsigned n_pipes = 0, n_hit = 0;
+   double create_ms = 0;
+   if (cache_file) {
+      size_t init_size = 0;
+      void *init = NULL;
+      FILE *cf = fopen(cache_file, "rb");
+      if (cf) {
+         fseek(cf, 0, SEEK_END);
+         init_size = (size_t)ftell(cf);
+         fseek(cf, 0, SEEK_SET);
+         init = malloc(init_size ? init_size : 1);
+         if (!init || fread(init, 1, init_size, cf) != init_size)
+            init_size = 0;
+         fclose(cf);
+      }
+      VkPipelineCacheCreateInfo pci = { .sType = VK_STRUCTURE_TYPE_PIPELINE_CACHE_CREATE_INFO,
+                                        .initialDataSize = init_size, .pInitialData = init };
+      CHECK(vkCreatePipelineCache(dev, &pci, NULL, &pcache));
+      printf("vkbench cache: initial data %zu bytes\n", init_size);
+      free(init);
+   }
+   /* One pipeline per call so that the feedback is per pipeline. */
+   VkPipelineCreationFeedback fb_pipe, fb_stages[2];
+   VkPipelineCreationFeedbackCreateInfo fbi_ext = { .sType = VK_STRUCTURE_TYPE_PIPELINE_CREATION_FEEDBACK_CREATE_INFO,
+                                                    .pPipelineCreationFeedback = &fb_pipe,
+                                                    .pipelineStageCreationFeedbackCount = 2,
+                                                    .pPipelineStageCreationFeedbacks = fb_stages };
+   if (use_fb)
+      gpi.pNext = &fbi_ext;
+#define CREATE(out)                                                                            \
+   do {                                                                                        \
+      struct timespec t0_, t1_;                                                                \
+      memset(&fb_pipe, 0, sizeof(fb_pipe));                                                    \
+      clock_gettime(CLOCK_MONOTONIC, &t0_);                                                    \
+      CHECK(vkCreateGraphicsPipelines(dev, pcache, 1, &gpi, NULL, out));                       \
+      clock_gettime(CLOCK_MONOTONIC, &t1_);                                                    \
+      create_ms += (t1_.tv_sec - t0_.tv_sec) * 1e3 + (t1_.tv_nsec - t0_.tv_nsec) / 1e6;       \
+      n_pipes++;                                                                               \
+      if (use_fb && (fb_pipe.flags & VK_PIPELINE_CREATION_FEEDBACK_VALID_BIT) &&           \
+          (fb_pipe.flags & VK_PIPELINE_CREATION_FEEDBACK_APPLICATION_PIPELINE_CACHE_HIT_BIT))  \
+         n_hit++;                                                                              \
+   } while (0)
+   if (use_fb && getenv("VKBENCH_CACHE_ALL")) {
+      for (unsigned k = 0; k < 2 * (sizeof(frags) / sizeof(frags[0])); k++) {
+         VkShaderModuleCreateInfo ksi = { .sType = VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO,
+                                          .codeSize = frags[k / 2].size, .pCode = frags[k / 2].code };
+         VkShaderModule kfs;
+         CHECK(vkCreateShaderModule(dev, &ksi, NULL, &kfs));
+         VkPipelineShaderStageCreateInfo kst[2] = { stages[0], stages[1] };
+         kst[1].module = kfs;
+         VkPipelineColorBlendAttachmentState kcba = cba;
+         kcba.blendEnable = k & 1;
+         VkPipelineColorBlendStateCreateInfo kcbs = cbs;
+         kcbs.pAttachments = &kcba;
+         VkGraphicsPipelineCreateInfo kgpi = gpi;
+         kgpi.pStages = kst;
+         kgpi.pColorBlendState = &kcbs;
+         VkPipeline kp;
+         VkGraphicsPipelineCreateInfo save = gpi;
+         gpi = kgpi;
+         CREATE(&kp);
+         gpi = save;
+      }
+   }
+   CREATE(&pipe);
+   size_t sz = 0;
+   if (cache_file) {
+      CHECK(vkGetPipelineCacheData(dev, pcache, &sz, NULL));
+      void *data = malloc(sz ? sz : 1);
+      CHECK(vkGetPipelineCacheData(dev, pcache, &sz, data));
+      char tmp[512];
+      snprintf(tmp, sizeof(tmp), "%s.tmp", cache_file);
+      FILE *cf = fopen(tmp, "wb");
+      if (!cf || fwrite(data, 1, sz, cf) != sz || fclose(cf) || rename(tmp, cache_file)) {
+         fprintf(stderr, "vkbench: cannot save %s\n", cache_file);
+         return 1;
+      }
+      free(data);
+   }
+   if (use_fb)
+      printf("vkbench cache: %u pipelines, %u reported found in the cache, vkCreateGraphicsPipelines %.2f ms, "
+             "saved %zu bytes\n", n_pipes, n_hit, create_ms, sz);
 
    uint64_t sum = 0;
    for (int it = 0; it < iterations; it++) {
