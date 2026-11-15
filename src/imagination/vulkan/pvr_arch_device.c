@@ -13,6 +13,7 @@
 #include "pvr_device.h"
 
 #include "vk_log.h"
+#include "vk_pipeline_cache.h"
 
 #include "hwdef/pvr_hw_utils.h"
 
@@ -868,6 +869,15 @@ VkResult PVR_PER_ARCH(create_device)(struct pvr_physical_device *pdevice,
    device->pdevice = pdevice;
    device->ws = ws;
 
+   /* XCLIPSE: device-wide shader cache for pipelines created without a
+    * VkPipelineCache (also backs the disk cache). Optional: without it
+    * pipelines are compiled every time.
+    */
+   device->vk.mem_cache =
+      vk_pipeline_cache_create(&device->vk,
+                               &(struct vk_pipeline_cache_create_info){ 0 },
+                               NULL);
+
    vk_device_set_drm_fd(&device->vk, ws->render_fd);
 
    if (ws->features.supports_threaded_submit) {
@@ -1063,6 +1073,8 @@ err_dec_device_count:
    pvr_bo_store_destroy(device);
 
 err_vk_device_finish:
+   if (device->vk.mem_cache)
+      vk_pipeline_cache_destroy(device->vk.mem_cache, NULL);
    vk_device_finish(&device->vk);
 
 err_free_device:
@@ -1133,6 +1145,8 @@ void PVR_PER_ARCH(destroy_device)(struct pvr_device *device,
    pvr_bo_store_destroy(device);
    pvr_winsys_destroy(device->ws);
    p_atomic_dec(&device->instance->active_device_count);
+   if (device->vk.mem_cache)
+      vk_pipeline_cache_destroy(device->vk.mem_cache, NULL);
    vk_device_finish(&device->vk);
    vk_free(&device->vk.alloc, device);
 }

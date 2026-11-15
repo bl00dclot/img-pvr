@@ -1116,8 +1116,10 @@ disk_cache_enabled()
    bool disable_by_default = false;
 #endif
 #if DETECT_OS_ANDROID && !defined(SHADER_CACHE_DISABLE_BY_DEFAULT)
-   /* Xclipse: a driver that supplied a writable app-private directory opts in by default. */
-   if (disk_cache_default_dir[0])
+   /* Xclipse: a driver that supplied a writable app-private directory opts in by default, and so
+    * does a process that names a cache directory (MESA_SHADER_CACHE_DIR, e.g. adb shell testing).
+    * MESA_SHADER_CACHE_DISABLE=true still turns it off. */
+   if (disk_cache_default_dir[0] || os_get_option("MESA_SHADER_CACHE_DIR"))
       disable_by_default = false;
 #endif
    char *envvar_name = "MESA_SHADER_CACHE_DISABLE";

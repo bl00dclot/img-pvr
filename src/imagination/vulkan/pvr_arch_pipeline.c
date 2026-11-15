@@ -49,6 +49,7 @@
 #include "pvr_macros.h"
 #include "pvr_nir_lower_ycbcr.h"
 #include "pvr_pass.h"
+#include "pvr_pipeline_cache.h"
 #include "pvr_physical_device.h"
 #include "pvr_robustness.h"
 #include "pvr_sampler.h"
@@ -57,6 +58,9 @@
 
 #include "util/log.h"
 #include "util/macros.h"
+#include "util/mesa-blake3.h"
+#include "util/os_misc.h"
+#include "util/os_time.h"
 #include "util/ralloc.h"
 #include "util/shader_stats.h"
 #include "util/u_dynarray.h"
@@ -72,6 +76,7 @@
 #include "vk_pipeline_layout.h"
 #include "vk_render_pass.h"
 #include "vk_util.h"
+#include "vk_ycbcr_conversion.h"
 #include "vulkan/runtime/vk_pipeline.h"
 #include "vulkan/vulkan_core.h"
 
@@ -128,12 +133,11 @@ static VkResult pvr_pds_coeff_program_create_and_upload(
 static VkResult pvr_pds_fragment_program_create(
    struct pvr_device *device,
    const VkAllocationCallbacks *allocator,
-   pco_shader *fs,
+   const pco_data *fs_data,
    struct pvr_fragment_shader_state *fragment_state)
 {
    struct pvr_pds_kickusc_program *program =
       &fragment_state->pds_fragment_program;
-   pco_data *fs_data = pco_shader_data(fs);
    uint32_t staging_buffer_size;
    uint32_t *staging_buffer;
 
@@ -978,38 +982,171 @@ lookup_ycbcr_conversion(const void *_state,
              : NULL;
 }
 
+static void pvr_pipeline_destroy_shader_data(pco_data *data, bool vs);
+
+/******************************************************************************
+   Shader cache keys
+ ******************************************************************************/
+
+/* XCLIPSE: the key of a cached pipeline's shaders is a BLAKE3 hash of every
+ * input of the compile: SPIR-V, entry point, specialisation and stage flags
+ * (vk_pipeline_hash_shader_stage), the pipeline layout as the compiler reads
+ * it (set and binding layout, immutable YCbCr conversions, push ranges), the
+ * device features that end up in pco_data, and for graphics the vertex
+ * attribute formats, the render pass or rendering info, blend and
+ * multisample state, and which of that state is dynamic. The driver build
+ * and the GPU are not in the key: pipelineCacheUUID (cache header) and the
+ * disk cache key already carry the build id and the BVNC.
+ * Anything the compile starts to read must be added here, or the cache
+ * returns stale shaders.
+ */
+#define PVR_CACHE_KEY_VERSION 1u
+
+static void pvr_hash_u32(struct mesa_blake3 *ctx, uint32_t v)
+{
+   _mesa_blake3_update(ctx, &v, sizeof(v));
+}
+
+static void pvr_hash_begin(struct mesa_blake3 *ctx,
+                           struct pvr_device *device,
+                           const char *domain)
+{
+   _mesa_blake3_init(ctx);
+   _mesa_blake3_update(ctx, domain, strlen(domain) + 1);
+   pvr_hash_u32(ctx, PVR_CACHE_KEY_VERSION);
+   /* The serialised pco_data has this size. */
+   pvr_hash_u32(ctx, sizeof(pco_data));
+   /* pvr_early_init_shader_data() */
+   pvr_hash_u32(ctx, device->vk.enabled_features.robustBufferAccess);
+   pvr_hash_u32(ctx, device->vk.enabled_features.nullDescriptor);
+   pvr_hash_u32(ctx, device->vk.enabled_features.image2DViewOf3D);
+   pvr_hash_u32(ctx, device->vk.enabled_features.imageSlicedViewOf3D);
+}
+
+static void pvr_hash_layout(struct mesa_blake3 *ctx,
+                            const struct vk_pipeline_layout *layout)
+{
+   pvr_hash_u32(ctx, layout->create_flags);
+   pvr_hash_u32(ctx, layout->set_count);
+
+   for (uint32_t i = 0; i < layout->set_count; i++) {
+      struct vk_descriptor_set_layout *vk_set = layout->set_layouts[i];
+
+      pvr_hash_u32(ctx, vk_set != NULL);
+      if (!vk_set)
+         continue;
+
+      const struct pvr_descriptor_set_layout *set =
+         vk_to_pvr_descriptor_set_layout(vk_set);
+
+      pvr_hash_u32(ctx, set->flags);
+      pvr_hash_u32(ctx, set->descriptor_count);
+      pvr_hash_u32(ctx, set->dynamic_buffer_count);
+      pvr_hash_u32(ctx, set->binding_count);
+      pvr_hash_u32(ctx, set->stage_flags);
+      pvr_hash_u32(ctx, set->size);
+
+      for (uint32_t b = 0; b < set->binding_count; b++) {
+         const struct pvr_descriptor_set_layout_binding *bind =
+            &set->bindings[b];
+
+         pvr_hash_u32(ctx, bind->type);
+         pvr_hash_u32(ctx, bind->flags);
+         pvr_hash_u32(ctx, bind->stage_flags);
+         pvr_hash_u32(ctx, bind->descriptor_count);
+         pvr_hash_u32(ctx, bind->offset);
+         pvr_hash_u32(ctx, bind->dynamic_buffer_idx);
+         pvr_hash_u32(ctx, bind->stride);
+         pvr_hash_u32(ctx, bind->immutable_sampler_count);
+
+         /* lookup_ycbcr_conversion() */
+         for (uint32_t k = 0; k < bind->immutable_sampler_count; k++) {
+            const struct pvr_sampler *sampler = bind->immutable_samplers[k];
+            const struct vk_ycbcr_conversion *conv =
+               sampler ? sampler->vk.ycbcr_conversion : NULL;
+
+            pvr_hash_u32(ctx, conv != NULL);
+            if (!conv)
+               continue;
+
+            const struct vk_ycbcr_conversion_state *s = &conv->state;
+            pvr_hash_u32(ctx, s->format);
+            pvr_hash_u32(ctx, s->ycbcr_model);
+            pvr_hash_u32(ctx, s->ycbcr_range);
+            for (unsigned m = 0; m < ARRAY_SIZE(s->mapping); m++)
+               pvr_hash_u32(ctx, s->mapping[m]);
+            for (unsigned m = 0; m < ARRAY_SIZE(s->chroma_offsets); m++)
+               pvr_hash_u32(ctx, s->chroma_offsets[m]);
+            pvr_hash_u32(ctx, s->chroma_filter);
+            pvr_hash_u32(ctx, s->chroma_reconstruction);
+         }
+      }
+   }
+
+   pvr_hash_u32(ctx, layout->push_descriptor_idx);
+   pvr_hash_u32(ctx, layout->push_range_count);
+   for (uint32_t i = 0; i < layout->push_range_count; i++) {
+      pvr_hash_u32(ctx, layout->push_ranges[i].stageFlags);
+      pvr_hash_u32(ctx, layout->push_ranges[i].offset);
+      pvr_hash_u32(ctx, layout->push_ranges[i].size);
+   }
+}
+
+static void pvr_hash_stage(struct mesa_blake3 *ctx,
+                           VkPipelineCreateFlags2KHR pipeline_flags,
+                           const VkPipelineShaderStageCreateInfo *info)
+{
+   blake3_hash hash;
+
+   vk_pipeline_hash_shader_stage(pipeline_flags, info, NULL, hash);
+   _mesa_blake3_update(ctx, hash, sizeof(hash));
+}
+
+/* The cache is skipped when the compiler prints, skips passes or changes
+ * its options through the environment, and when the NIR dump is asked for.
+ */
+static bool pvr_pipeline_cache_bypass(VkPipelineCreateFlags2KHR flags)
+{
+   return (flags & VK_PIPELINE_CREATE_2_CAPTURE_INTERNAL_REPRESENTATIONS_BIT_KHR) ||
+          os_get_option("PCO_DEBUG") || os_get_option("PCO_DEBUG_PRINT") ||
+          os_get_option("PCO_SKIP_PASSES");
+}
+
 /******************************************************************************
    Compute pipeline functions
  ******************************************************************************/
 
-static void
-pvr_compute_state_save(struct pvr_compute_pipeline *compute_pipeline,
-                       pco_shader *cs)
+static void pvr_compute_pipeline_key(struct pvr_device *device,
+                                     const VkComputePipelineCreateInfo *info,
+                                     const struct pvr_compute_pipeline *pipeline,
+                                     uint8_t key[PVR_CACHED_KEY_SIZE])
 {
-   const pco_data *shader_data = pco_shader_data(cs);
-   memcpy(&compute_pipeline->cs_data, shader_data, sizeof(*shader_data));
+   struct mesa_blake3 ctx;
+
+   pvr_hash_begin(&ctx, device, "pvr-cs");
+   pvr_hash_layout(&ctx, pipeline->base.layout);
+   pvr_hash_stage(&ctx, pipeline->base.pipeline_flags, &info->stage);
+   _mesa_blake3_final(&ctx, key);
 }
 
-/* Compiles and uploads shaders and PDS programs. */
-static VkResult pvr_compute_pipeline_compile(
-   struct pvr_device *const device,
-   struct vk_pipeline_cache *cache,
-   const VkComputePipelineCreateInfo *pCreateInfo,
-   const VkAllocationCallbacks *const allocator,
-   struct pvr_compute_pipeline *const compute_pipeline)
+/* Compiles the compute shader, builds the cache object and adds it to the
+ * cache (when there is one and it may be used).
+ */
+static VkResult
+pvr_compute_shaders_compile(struct pvr_device *const device,
+                            struct vk_pipeline_cache *cache,
+                            const VkComputePipelineCreateInfo *pCreateInfo,
+                            struct pvr_compute_pipeline *const compute_pipeline,
+                            const uint8_t key[PVR_CACHED_KEY_SIZE],
+                            struct pvr_cached_shaders **cached_out)
 {
    struct vk_pipeline_layout *layout = compute_pipeline->base.layout;
-   const uint32_t cache_line_size =
-      pvr_get_slc_cache_line_size(&device->pdevice->dev_info);
    pco_ctx *pco_ctx = device->pdevice->pco_ctx;
    void *shader_mem_ctx = ralloc_context(NULL);
    pco_data shader_data = { 0 };
+   struct pvr_cached_shaders *cached = NULL;
    nir_shader *nir;
    pco_shader *cs;
-
-   struct pvr_compute_shader_state *compute_state =
-      &compute_pipeline->shader_state;
-
    VkResult result;
 
    result =
@@ -1054,53 +1191,165 @@ static VkResult pvr_compute_pipeline_compile(
    pco_process_ir(pco_ctx, cs);
    pco_encode_ir(pco_ctx, cs);
 
-   pvr_compute_state_save(compute_pipeline, cs);
-
-   if (pCreateInfo->flags & VK_PIPELINE_CREATE_CAPTURE_STATISTICS_BIT_KHR) {
-      struct pvr_stats stats = pco_get_pvr_stats(cs);
-      compute_pipeline->cs_stats =
-         vk_zalloc2(&device->vk.alloc,
-                    allocator,
-                    sizeof(stats),
-                    8,
-                    VK_SYSTEM_ALLOCATION_SCOPE_OBJECT);
-
-      if (!compute_pipeline->cs_stats)
-         return vk_error(device, VK_ERROR_OUT_OF_HOST_MEMORY);
-
-      memcpy(compute_pipeline->cs_stats, &stats, sizeof(stats));
-   }
-
    if (pCreateInfo->flags &
        VK_PIPELINE_CREATE_CAPTURE_INTERNAL_REPRESENTATIONS_BIT_KHR) {
       compute_pipeline->cs_nir_str = nir_shader_as_str(nir, NULL);
    }
 
+   const pco_data *cs_data = pco_shader_data(cs);
+   const bool zero_init = cs_data->cs.zero_shmem && !cs_data->cs.global_shmem;
+   const struct pvr_stats cs_stats = pco_get_pvr_stats(cs);
+
+   cached = pvr_cached_shaders_create(device,
+                                      key,
+                                      PVR_CACHED_HAS_STAGE0 |
+                                         (zero_init ? PVR_CACHED_HAS_STAGE1 : 0));
+   if (!cached) {
+      result = vk_error(device, VK_ERROR_OUT_OF_HOST_MEMORY);
+      goto err_free_build_context;
+   }
+
+   if (!pvr_cached_shaders_set_stage(cached,
+                                     0,
+                                     cs_data,
+                                     pco_shader_binary_data(cs),
+                                     pco_shader_binary_size(cs),
+                                     &cs_stats)) {
+      result = vk_error(device, VK_ERROR_OUT_OF_HOST_MEMORY);
+      goto err_unref_cached;
+   }
+
+   if (zero_init) {
+      pco_shader *zero_init_shader = pvr_usc_zero_init_wg_mem(pco_ctx,
+                                                              cs_data->cs.shmem.start,
+                                                              cs_data->cs.shmem.count);
+      const struct pvr_stats no_stats = { 0 };
+      bool ok = pvr_cached_shaders_set_stage(cached,
+                                             1,
+                                             pco_shader_data(zero_init_shader),
+                                             pco_shader_binary_data(zero_init_shader),
+                                             pco_shader_binary_size(zero_init_shader),
+                                             &no_stats);
+      ralloc_free(zero_init_shader);
+
+      if (!ok) {
+         result = vk_error(device, VK_ERROR_OUT_OF_HOST_MEMORY);
+         goto err_unref_cached;
+      }
+   }
+
+   /* The cache object has its own copy of the pointers in the data. */
+   pvr_pipeline_destroy_shader_data(&shader_data, false);
+   ralloc_free(shader_mem_ctx);
+
+   if (cache)
+      cached = pvr_cached_shaders_add(cache, cached);
+
+   *cached_out = cached;
+   return VK_SUCCESS;
+
+err_unref_cached:
+   pvr_cached_shaders_unref(device, cached);
+
+err_free_build_context:
+   pvr_pipeline_destroy_shader_data(&shader_data, false);
+   ralloc_free(shader_mem_ctx);
+   return result;
+}
+
+/* Compiles (or finds) the shaders, uploads them and builds the PDS programs. */
+static VkResult pvr_compute_pipeline_compile(
+   struct pvr_device *const device,
+   struct vk_pipeline_cache *cache,
+   const VkComputePipelineCreateInfo *pCreateInfo,
+   const VkAllocationCallbacks *const allocator,
+   struct pvr_compute_pipeline *const compute_pipeline,
+   bool *cache_hit)
+{
+   struct vk_pipeline_layout *layout = compute_pipeline->base.layout;
+   const uint32_t cache_line_size =
+      pvr_get_slc_cache_line_size(&device->pdevice->dev_info);
+   pco_ctx *pco_ctx = device->pdevice->pco_ctx;
+   struct pvr_compute_shader_state *compute_state =
+      &compute_pipeline->shader_state;
+   const VkPipelineCreateFlags2KHR flags =
+      vk_compute_pipeline_create_flags(pCreateInfo);
+   const bool bypass = pvr_pipeline_cache_bypass(flags);
+   struct pvr_cached_shaders *cached = NULL;
+   uint8_t key[PVR_CACHED_KEY_SIZE];
+   VkResult result;
+
+   *cache_hit = false;
+
+   pvr_compute_pipeline_key(device, pCreateInfo, compute_pipeline, key);
+
+   bool mem_hit = false;
+   if (cache && !bypass)
+      cached = pvr_cached_shaders_lookup(cache, key, &mem_hit);
+
+   /* XCLIPSE: found in the cache (memory or disk): no shader is compiled.
+    * VK_EXT_pipeline_creation_feedback only reports APPLICATION_PIPELINE_CACHE_HIT
+    * for a pipeline found in the cache the application passed in (dEQP
+    * creation_feedback.*_no_cache), not in the device-wide one, and, as
+    * in the common runtime, not for an entry read from the disk cache.
+    */
+   *cache_hit = cached && mem_hit && cache != device->vk.mem_cache;
+
+   if (!cached) {
+      if (flags & VK_PIPELINE_CREATE_2_FAIL_ON_PIPELINE_COMPILE_REQUIRED_BIT_KHR)
+         return VK_PIPELINE_COMPILE_REQUIRED;
+
+      result = pvr_compute_shaders_compile(device,
+                                           bypass ? NULL : cache,
+                                           pCreateInfo,
+                                           compute_pipeline,
+                                           key,
+                                           &cached);
+      if (result != VK_SUCCESS)
+         return result;
+   }
+
+   if (!pvr_cached_stage_clone_data(&cached->stage[0],
+                                    false,
+                                    &compute_pipeline->cs_data)) {
+      result = vk_error(device, VK_ERROR_OUT_OF_HOST_MEMORY);
+      goto err_unref_cached;
+   }
+
+   if (pCreateInfo->flags & VK_PIPELINE_CREATE_CAPTURE_STATISTICS_BIT_KHR) {
+      compute_pipeline->cs_stats =
+         vk_zalloc2(&device->vk.alloc,
+                    allocator,
+                    sizeof(*compute_pipeline->cs_stats),
+                    8,
+                    VK_SYSTEM_ALLOCATION_SCOPE_OBJECT);
+      if (!compute_pipeline->cs_stats) {
+         result = vk_error(device, VK_ERROR_OUT_OF_HOST_MEMORY);
+         goto err_free_shader_data;
+      }
+
+      memcpy(compute_pipeline->cs_stats,
+             &cached->stage[0].stats,
+             sizeof(*compute_pipeline->cs_stats));
+   }
+
    result = pvr_gpu_upload_usc(device,
-                               pco_shader_binary_data(cs),
-                               pco_shader_binary_size(cs),
+                               cached->stage[0].binary,
+                               cached->stage[0].binary_size,
                                cache_line_size,
                                &compute_pipeline->shader_state.shader_bo);
    if (result != VK_SUCCESS)
-      goto err_free_build_context;
+      goto err_free_shader_data;
 
-   if (compute_pipeline->cs_data.cs.zero_shmem &&
-       !compute_pipeline->cs_data.cs.global_shmem) {
-      uint32_t start = compute_pipeline->cs_data.cs.shmem.start;
-      uint32_t count = compute_pipeline->cs_data.cs.shmem.count;
-      pco_shader *zero_init_shader =
-         pvr_usc_zero_init_wg_mem(pco_ctx, start, count);
-
+   if (cached->flags & PVR_CACHED_HAS_STAGE1) {
       compute_state->coeff_update_shader_temps =
-         pco_shader_data(zero_init_shader)->common.temps;
+         cached->stage[1].data.common.temps;
 
       result = pvr_gpu_upload_usc(device,
-                                  pco_shader_binary_data(zero_init_shader),
-                                  pco_shader_binary_size(zero_init_shader),
+                                  cached->stage[1].binary,
+                                  cached->stage[1].binary_size,
                                   cache_line_size,
                                   &compute_state->coeff_update_shader_bo);
-      ralloc_free(zero_init_shader);
-
       if (result != VK_SUCCESS)
          goto err_free_shader;
    }
@@ -1122,23 +1371,28 @@ static VkResult pvr_compute_pipeline_compile(
    if (result != VK_SUCCESS)
       goto err_free_descriptor_program;
 
-   ralloc_free(shader_mem_ctx);
+   pvr_cached_shaders_unref(device, cached);
 
    return VK_SUCCESS;
-
-err_free_coeff_update_shader:
-   pvr_bo_suballoc_free(compute_pipeline->shader_state.coeff_update_shader_bo);
 
 err_free_descriptor_program:
    pvr_pds_descriptor_program_destroy(device,
                                       allocator,
                                       &compute_pipeline->descriptor_state);
 
+err_free_coeff_update_shader:
+   pvr_bo_suballoc_free(compute_pipeline->shader_state.coeff_update_shader_bo);
+
 err_free_shader:
    pvr_bo_suballoc_free(compute_pipeline->shader_state.shader_bo);
 
-err_free_build_context:
-   ralloc_free(shader_mem_ctx);
+err_free_shader_data:
+   vk_free2(&device->vk.alloc, allocator, compute_pipeline->cs_stats);
+   compute_pipeline->cs_stats = NULL;
+   pvr_pipeline_destroy_shader_data(&compute_pipeline->cs_data, false);
+
+err_unref_cached:
+   pvr_cached_shaders_unref(device, cached);
    return result;
 }
 
@@ -1147,7 +1401,8 @@ pvr_compute_pipeline_init(struct pvr_device *device,
                           struct vk_pipeline_cache *cache,
                           const VkComputePipelineCreateInfo *pCreateInfo,
                           const VkAllocationCallbacks *allocator,
-                          struct pvr_compute_pipeline *compute_pipeline)
+                          struct pvr_compute_pipeline *compute_pipeline,
+                          bool *cache_hit)
 {
    VkResult result;
 
@@ -1160,8 +1415,10 @@ pvr_compute_pipeline_init(struct pvr_device *device,
                                          cache,
                                          pCreateInfo,
                                          allocator,
-                                         compute_pipeline);
+                                         compute_pipeline,
+                                         cache_hit);
    if (result != VK_SUCCESS) {
+      ralloc_free((void *)compute_pipeline->cs_nir_str);
       pvr_pipeline_finish(device, &compute_pipeline->base);
       return result;
    }
@@ -1174,7 +1431,8 @@ pvr_compute_pipeline_create(struct pvr_device *device,
                             struct vk_pipeline_cache *cache,
                             const VkComputePipelineCreateInfo *pCreateInfo,
                             const VkAllocationCallbacks *allocator,
-                            VkPipeline *const pipeline_out)
+                            VkPipeline *const pipeline_out,
+                            bool *cache_hit)
 {
    struct pvr_compute_pipeline *compute_pipeline;
    VkResult result;
@@ -1192,7 +1450,8 @@ pvr_compute_pipeline_create(struct pvr_device *device,
                                       cache,
                                       pCreateInfo,
                                       allocator,
-                                      compute_pipeline);
+                                      compute_pipeline,
+                                      cache_hit);
    if (result != VK_SUCCESS) {
       vk_free2(&device->vk.alloc, allocator, compute_pipeline);
       return result;
@@ -1230,6 +1489,34 @@ static void pvr_compute_pipeline_destroy(
    vk_free2(&device->vk.alloc, allocator, compute_pipeline);
 }
 
+/* VK_EXT_pipeline_creation_feedback. A pipeline whose shaders came from the
+ * cache (memory, VkPipelineCache data or disk) reports
+ * APPLICATION_PIPELINE_CACHE_HIT: no shader was compiled for it.
+ */
+static void pvr_fill_creation_feedback(const void *pNext,
+                                       bool cache_hit,
+                                       uint64_t duration_ns)
+{
+   const VkPipelineCreationFeedbackCreateInfo *info =
+      vk_find_struct_const(pNext, PIPELINE_CREATION_FEEDBACK_CREATE_INFO);
+   if (!info)
+      return;
+
+   const VkPipelineCreationFeedback feedback = {
+      .flags = VK_PIPELINE_CREATION_FEEDBACK_VALID_BIT |
+               (cache_hit
+                   ? VK_PIPELINE_CREATION_FEEDBACK_APPLICATION_PIPELINE_CACHE_HIT_BIT
+                   : 0),
+      .duration = duration_ns,
+   };
+
+   *info->pPipelineCreationFeedback = feedback;
+   for (uint32_t i = 0; i < info->pipelineStageCreationFeedbackCount; i++) {
+      info->pPipelineStageCreationFeedbacks[i] = feedback;
+      info->pPipelineStageCreationFeedbacks[i].duration = 0;
+   }
+}
+
 VkResult PVR_PER_ARCH(CreateComputePipelines)(
    VkDevice _device,
    VkPipelineCache pipelineCache,
@@ -1242,36 +1529,40 @@ VkResult PVR_PER_ARCH(CreateComputePipelines)(
    VK_FROM_HANDLE(pvr_device, device, _device);
    VkResult result = VK_SUCCESS;
 
+   /* XCLIPSE: without an application cache the device-wide one is used. */
+   if (!cache)
+      cache = device->vk.mem_cache;
+
    for (uint32_t i = 0; i < createInfoCount; i++) {
       const VkPipelineCreateFlags2KHR flags =
          vk_compute_pipeline_create_flags(&pCreateInfos[i]);
-
-      /* XCLIPSE: nothing is ever found in a pipeline cache, so every pipeline
-       * needs a compile (VK_EXT_pipeline_creation_cache_control).
-       */
-      if (flags &
-          VK_PIPELINE_CREATE_2_FAIL_ON_PIPELINE_COMPILE_REQUIRED_BIT_KHR) {
-         result = VK_PIPELINE_COMPILE_REQUIRED;
-         pPipelines[i] = VK_NULL_HANDLE;
-
-         if (flags & VK_PIPELINE_CREATE_2_EARLY_RETURN_ON_FAILURE_BIT_KHR) {
-            for (uint32_t j = i + 1; j < createInfoCount; j++)
-               pPipelines[j] = VK_NULL_HANDLE;
-            break;
-         }
-
-         continue;
-      }
+      const uint64_t start = os_time_get_nano();
+      bool cache_hit = false;
 
       const VkResult local_result =
          pvr_compute_pipeline_create(device,
                                      cache,
                                      &pCreateInfos[i],
                                      pAllocator,
-                                     &pPipelines[i]);
-      if (local_result != VK_SUCCESS) {
-         result = local_result;
-         pPipelines[i] = VK_NULL_HANDLE;
+                                     &pPipelines[i],
+                                     &cache_hit);
+      if (local_result == VK_SUCCESS) {
+         pvr_fill_creation_feedback(pCreateInfos[i].pNext,
+                                    cache_hit,
+                                    os_time_get_nano() - start);
+         continue;
+      }
+
+      /* VK_PIPELINE_COMPILE_REQUIRED: the pipeline was not in the cache and
+       * the application asked not to compile.
+       */
+      result = local_result;
+      pPipelines[i] = VK_NULL_HANDLE;
+
+      if (flags & VK_PIPELINE_CREATE_2_EARLY_RETURN_ON_FAILURE_BIT_KHR) {
+         for (uint32_t j = i + 1; j < createInfoCount; j++)
+            pPipelines[j] = VK_NULL_HANDLE;
+         break;
       }
    }
 
@@ -1361,14 +1652,10 @@ pvr_graphics_pipeline_destroy(struct pvr_device *const device,
    vk_free2(&device->vk.alloc, allocator, gfx_pipeline);
 }
 
-static void pvr_vertex_state_save(struct pvr_graphics_pipeline *gfx_pipeline,
-                                  pco_shader *vs)
+static void pvr_vertex_state_save(struct pvr_graphics_pipeline *gfx_pipeline)
 {
    struct pvr_vertex_shader_state *vertex_state =
       &gfx_pipeline->shader_state.vertex;
-
-   const pco_data *shader_data = pco_shader_data(vs);
-   memcpy(&gfx_pipeline->vs_data, shader_data, sizeof(*shader_data));
 
    /* This ends up unused since we'll use the temp_usage for the PDS program we
     * end up selecting, and the descriptor PDS program doesn't use any temps.
@@ -1377,14 +1664,12 @@ static void pvr_vertex_state_save(struct pvr_graphics_pipeline *gfx_pipeline,
    vertex_state->stage_state.pds_temps_count = ~0;
 }
 
-static void pvr_fragment_state_save(struct pvr_graphics_pipeline *gfx_pipeline,
-                                    pco_shader *fs)
+static void pvr_fragment_state_save(struct pvr_graphics_pipeline *gfx_pipeline)
 {
    struct pvr_fragment_shader_state *fragment_state =
       &gfx_pipeline->shader_state.fragment;
 
-   const pco_data *shader_data = pco_shader_data(fs);
-   memcpy(&gfx_pipeline->fs_data, shader_data, sizeof(*shader_data));
+   const pco_data *shader_data = &gfx_pipeline->fs_data;
 
    if (shader_data->fs.uses.depth_feedback)
       fragment_state->pass_type = ROGUE_TA_PASSTYPE_DEPTH_FEEDBACK;
@@ -1524,15 +1809,14 @@ static void pvr_graphics_pipeline_setup_vertex_dma(
 
 static void pvr_graphics_pipeline_setup_fragment_coeff_program(
    struct pvr_graphics_pipeline *gfx_pipeline,
-   nir_shader *fs)
+   uint64_t varyings_used,
+   const uint8_t fs_interp[static MAX_VARYING])
 {
    struct pvr_fragment_shader_state *fragment_state =
       &gfx_pipeline->shader_state.fragment;
    struct pvr_pds_coeff_loading_program *frag_coeff_program =
       &fragment_state->pds_coeff_program;
 
-   uint64_t varyings_used = fs->info.inputs_read &
-                            BITFIELD64_RANGE(VARYING_SLOT_VAR0, MAX_VARYING);
    pco_vs_data *vs_data = &gfx_pipeline->vs_data.vs;
    pco_fs_data *fs_data = &gfx_pipeline->fs_data.fs;
 
@@ -1583,10 +1867,6 @@ static void pvr_graphics_pipeline_setup_fragment_coeff_program(
    }
 
    u_foreach_bit64 (varying, varyings_used) {
-      nir_variable *var =
-         nir_find_variable_with_location(fs, nir_var_shader_in, varying);
-      assert(var);
-
       pco_range *cf_range = &fs_data->varyings[varying];
       assert(cf_range->count > 0);
       assert(!(cf_range->start % ROGUE_USC_COEFFICIENT_SET_SIZE));
@@ -1626,7 +1906,7 @@ static void pvr_graphics_pipeline_setup_fragment_coeff_program(
          douti_src.f16 = false;
          douti_src.f16_offset = douti_src.f32_offset;
 
-         switch (var->data.interpolation) {
+         switch (fs_interp[varying - VARYING_SLOT_VAR0]) {
          case INTERP_MODE_SMOOTH:
             douti_src.perspective = true;
             FALLTHROUGH;
@@ -3134,25 +3414,205 @@ static bool pvr_build_fs_passthrough(bool no_fragment_shader,
    return is_arch_rogue && no_fragment_shader;
 }
 
-/* Compiles and uploads shaders and PDS programs. */
+static void pvr_hash_mrt_resource(struct mesa_blake3 *ctx,
+                                  const struct usc_mrt_resource *res)
+{
+   /* reg.output_reg and reg.offset overlay mem.tile_buffer and
+    * mem.offset_dw.
+    */
+   pvr_hash_u32(ctx, res->type);
+   pvr_hash_u32(ctx, res->intermediate_size);
+   pvr_hash_u32(ctx, res->mem.tile_buffer);
+   pvr_hash_u32(ctx, res->mem.offset_dw);
+}
+
+/* pvr_init_fs_outputs(), pvr_setup_fs_outputs() and the input attachment
+ * functions for a render pass.
+ */
+static void pvr_hash_render_pass_state(struct mesa_blake3 *ctx,
+                                       const VkGraphicsPipelineCreateInfo *info)
+{
+   VK_FROM_HANDLE(pvr_render_pass, pass, info->renderPass);
+   const struct pvr_render_subpass *const subpass =
+      &pass->subpasses[info->subpass];
+   const struct pvr_renderpass_hw_map *subpass_map =
+      &pass->hw_setup->subpass_map[info->subpass];
+   const struct pvr_renderpass_hwsetup_subpass *hw_subpass =
+      &pass->hw_setup->renders[subpass_map->render]
+          .subpasses[subpass_map->subpass];
+   const struct usc_mrt_setup *setup = &hw_subpass->setup;
+
+   pvr_hash_u32(ctx, pass->multiview_enabled);
+   pvr_hash_u32(ctx, setup->num_render_targets);
+   pvr_hash_u32(ctx, subpass->color_count);
+
+   for (uint32_t u = 0; u < subpass->color_count; u++) {
+      const uint32_t idx = subpass->color_attachments[u];
+
+      pvr_hash_u32(ctx, idx);
+      if (idx == VK_ATTACHMENT_UNUSED)
+         continue;
+
+      pvr_hash_u32(ctx, pass->attachments[idx].vk_format);
+      if (u < setup->num_render_targets)
+         pvr_hash_mrt_resource(ctx, &setup->mrt_resources[u]);
+   }
+
+   pvr_hash_u32(ctx, hw_subpass->z_replicate);
+   if (hw_subpass->z_replicate >= 0) {
+      /* Read at index color_count and at index z_replicate. */
+      if (subpass->color_count < setup->num_render_targets)
+         pvr_hash_mrt_resource(ctx, &setup->mrt_resources[subpass->color_count]);
+
+      if ((uint32_t)hw_subpass->z_replicate < setup->num_render_targets) {
+         pvr_hash_mrt_resource(ctx,
+                               &setup->mrt_resources[hw_subpass->z_replicate]);
+      }
+   }
+
+   pvr_hash_u32(ctx, subpass->input_count);
+   for (uint32_t u = 0; u < subpass->input_count; u++) {
+      const uint32_t idx = subpass->input_attachments[u].attachment_idx;
+      const bool onchip = hw_subpass->input_access[u].type !=
+                          PVR_RENDERPASS_HWSETUP_INPUT_ACCESS_OFFCHIP;
+
+      pvr_hash_u32(ctx, idx);
+      pvr_hash_u32(ctx, hw_subpass->input_access[u].type);
+      if (idx == VK_ATTACHMENT_UNUSED || !onchip)
+         continue;
+
+      const uint32_t mrt_idx = hw_subpass->input_access[u].on_chip_rt;
+
+      pvr_hash_u32(ctx, pass->attachments[idx].vk_format);
+      pvr_hash_u32(ctx, mrt_idx);
+      if (mrt_idx < setup->num_render_targets)
+         pvr_hash_mrt_resource(ctx, &setup->mrt_resources[mrt_idx]);
+   }
+}
+
+static void pvr_graphics_pipeline_key(struct pvr_device *device,
+                                      const VkGraphicsPipelineCreateInfo *info,
+                                      const struct pvr_graphics_pipeline *pipeline,
+                                      const struct vk_graphics_pipeline_state *state,
+                                      uint8_t key[PVR_CACHED_KEY_SIZE])
+{
+   struct mesa_blake3 ctx;
+
+   pvr_hash_begin(&ctx, device, "pvr-gfx");
+   pvr_hash_layout(&ctx, pipeline->base.layout);
+
+   /* Stages and their SPIR-V. */
+   for (mesa_shader_stage stage = 0; stage < MESA_SHADER_STAGES; ++stage) {
+      const size_t idx = pipeline->stage_indices[stage];
+
+      pvr_hash_u32(&ctx, idx != ~0);
+      if (idx != ~0) {
+         pvr_hash_stage(&ctx,
+                        pipeline->base.pipeline_flags,
+                        &info->pStages[idx]);
+      }
+   }
+
+   /* pvr_init_vs_attribs(): attribute locations and formats. */
+   const VkPipelineVertexInputStateCreateInfo *vi = info->pVertexInputState;
+   pvr_hash_u32(&ctx, vi ? vi->vertexAttributeDescriptionCount : 0);
+   for (uint32_t i = 0; vi && i < vi->vertexAttributeDescriptionCount; i++) {
+      pvr_hash_u32(&ctx, vi->pVertexAttributeDescriptions[i].location);
+      pvr_hash_u32(&ctx, vi->pVertexAttributeDescriptions[i].format);
+   }
+
+   /* Render pass or dynamic rendering: attachment formats, the MRT setup
+    * they produce, multiview.
+    */
+   pvr_hash_u32(&ctx, info->renderPass != VK_NULL_HANDLE);
+   if (info->renderPass) {
+      pvr_hash_render_pass_state(&ctx, info);
+   } else {
+      const VkPipelineRenderingCreateInfo *ri =
+         vk_find_struct_const(info->pNext, PIPELINE_RENDERING_CREATE_INFO);
+      const struct vk_render_pass_state *rp = state->rp;
+
+      pvr_hash_u32(&ctx, ri && ri->viewMask);
+      pvr_hash_u32(&ctx, rp != NULL);
+      if (rp) {
+         pvr_hash_u32(&ctx, rp->attachments);
+         pvr_hash_u32(&ctx, rp->color_attachment_count);
+         for (uint32_t i = 0; i < rp->color_attachment_count; i++)
+            pvr_hash_u32(&ctx, rp->color_attachment_formats[i]);
+         pvr_hash_u32(&ctx, rp->depth_attachment_format);
+         pvr_hash_u32(&ctx, rp->stencil_attachment_format);
+      }
+   }
+
+   /* pvr_init_fs_blend() and pvr_preprocess_shader_data(). */
+   const struct vk_color_blend_state *cb = state->cb;
+   pvr_hash_u32(&ctx, cb != NULL);
+   if (cb) {
+      pvr_hash_u32(&ctx, cb->logic_op_enable);
+      pvr_hash_u32(&ctx, cb->logic_op);
+      pvr_hash_u32(&ctx, cb->color_write_enables);
+      pvr_hash_u32(&ctx, cb->attachment_count);
+      for (uint32_t i = 0; i < cb->attachment_count; i++) {
+         const struct vk_color_blend_attachment_state *rt = &cb->attachments[i];
+
+         pvr_hash_u32(&ctx, rt->blend_enable);
+         pvr_hash_u32(&ctx, rt->src_color_blend_factor);
+         pvr_hash_u32(&ctx, rt->dst_color_blend_factor);
+         pvr_hash_u32(&ctx, rt->color_blend_op);
+         pvr_hash_u32(&ctx, rt->src_alpha_blend_factor);
+         pvr_hash_u32(&ctx, rt->dst_alpha_blend_factor);
+         pvr_hash_u32(&ctx, rt->alpha_blend_op);
+         pvr_hash_u32(&ctx, rt->write_mask);
+      }
+   }
+
+   const struct vk_multisample_state *ms = state->ms;
+   pvr_hash_u32(&ctx, ms != NULL);
+   if (ms) {
+      pvr_hash_u32(&ctx, ms->rasterization_samples);
+      pvr_hash_u32(&ctx, ms->sample_shading_enable);
+      pvr_hash_u32(&ctx, ms->alpha_to_coverage_enable);
+      pvr_hash_u32(&ctx, ms->alpha_to_one_enable);
+      pvr_hash_u32(&ctx, ms->sample_mask);
+   }
+
+   static const enum mesa_vk_dynamic_graphics_state dynamic_bits[] = {
+      MESA_VK_DYNAMIC_CB_COLOR_WRITE_ENABLES,
+      MESA_VK_DYNAMIC_MS_RASTERIZATION_SAMPLES,
+      MESA_VK_DYNAMIC_MS_SAMPLE_MASK,
+      MESA_VK_DYNAMIC_MS_ALPHA_TO_COVERAGE_ENABLE,
+      MESA_VK_DYNAMIC_MS_ALPHA_TO_ONE_ENABLE,
+   };
+   for (unsigned i = 0; i < ARRAY_SIZE(dynamic_bits); i++)
+      pvr_hash_u32(&ctx, BITSET_TEST(state->dynamic, dynamic_bits[i]));
+
+   _mesa_blake3_final(&ctx, key);
+}
+
+static void pvr_graphics_free_shader_data(pco_data data[MESA_SHADER_STAGES])
+{
+   for (mesa_shader_stage stage = 0; stage < MESA_SHADER_STAGES; ++stage)
+      pvr_pipeline_destroy_shader_data(&data[stage],
+                                       stage == MESA_SHADER_VERTEX);
+}
+
+/* Compiles the VS and FS of a graphics pipeline, builds the cache object
+ * and adds it to the cache (when there is one and it may be used).
+ */
 static VkResult
-pvr_graphics_pipeline_compile(struct pvr_device *const device,
-                              struct vk_pipeline_cache *cache,
-                              const VkGraphicsPipelineCreateInfo *pCreateInfo,
-                              const VkAllocationCallbacks *const allocator,
-                              struct pvr_graphics_pipeline *const gfx_pipeline,
-                              const struct vk_graphics_pipeline_state *state)
+pvr_graphics_shaders_compile(struct pvr_device *const device,
+                             struct vk_pipeline_cache *cache,
+                             const VkGraphicsPipelineCreateInfo *pCreateInfo,
+                             struct pvr_graphics_pipeline *const gfx_pipeline,
+                             const struct vk_graphics_pipeline_state *state,
+                             const uint8_t key[PVR_CACHED_KEY_SIZE],
+                             struct pvr_cached_shaders **cached_out)
 {
    struct vk_pipeline_layout *layout = gfx_pipeline->base.layout;
-   const uint32_t cache_line_size =
-      pvr_get_slc_cache_line_size(&device->pdevice->dev_info);
    VkResult result;
 
-   struct pvr_vertex_shader_state *vertex_state =
-      &gfx_pipeline->shader_state.vertex;
-   struct pvr_fragment_shader_state *fragment_state =
-      &gfx_pipeline->shader_state.fragment;
    struct usc_mrt_setup mrt_setup = { 0 };
+   bool mrt_setup_owned = false;
 
    if (!pCreateInfo->renderPass) {
       const struct vk_render_pass_state *rp = state->rp;
@@ -3199,6 +3659,7 @@ pvr_graphics_pipeline_compile(struct pvr_device *const device,
       }
 
       pvr_arch_destroy_mrt_setup(device, &mrt_setup_tmp);
+      mrt_setup_owned = true;
    }
 
    pco_ctx *pco_ctx = device->pdevice->pco_ctx;
@@ -3212,9 +3673,7 @@ pvr_graphics_pipeline_compile(struct pvr_device *const device,
    pco_shader **vs = &pco_shaders[MESA_SHADER_VERTEX];
    pco_shader **fs = &pco_shaders[MESA_SHADER_FRAGMENT];
    void *shader_mem_ctx = ralloc_context(NULL);
-
-   struct pvr_pds_vertex_dma vtx_dma_descriptions[PVR_MAX_VERTEX_ATTRIB_DMAS];
-   uint32_t vtx_dma_count = 0;
+   struct pvr_cached_shaders *cached = NULL;
    bool build_fs_passthrough = false;
 
    for (mesa_shader_stage stage = 0; stage < MESA_SHADER_STAGES; ++stage) {
@@ -3309,8 +3768,10 @@ pvr_graphics_pipeline_compile(struct pvr_device *const device,
                                   &mrt_setup);
    }
 
-   if (!pCreateInfo->renderPass)
+   if (mrt_setup_owned) {
       pvr_arch_destroy_mrt_setup(device, &mrt_setup);
+      mrt_setup_owned = false;
+   }
 
    for (mesa_shader_stage stage = 0; stage < MESA_SHADER_STAGES; ++stage) {
       pco_shader **pco = &pco_shaders[stage];
@@ -3332,26 +3793,196 @@ pvr_graphics_pipeline_compile(struct pvr_device *const device,
       pco_encode_ir(pco_ctx, *pco);
    }
 
-   pvr_vertex_state_save(gfx_pipeline, *vs);
+   cached = pvr_cached_shaders_create(device,
+                                      key,
+                                      PVR_CACHED_HAS_STAGE0 |
+                                         PVR_CACHED_STAGE0_IS_VS |
+                                         (*fs ? PVR_CACHED_HAS_STAGE1 : 0) |
+                                         (build_fs_passthrough
+                                             ? PVR_CACHED_FS_PASSTHROUGH
+                                             : 0));
+   if (!cached) {
+      result = vk_error(device, VK_ERROR_OUT_OF_HOST_MEMORY);
+      goto err_free_build_context;
+   }
 
-   if (pCreateInfo->flags & VK_PIPELINE_CREATE_CAPTURE_STATISTICS_BIT_KHR) {
-      struct pvr_stats stats = pco_get_pvr_stats(*vs);
-      gfx_pipeline->vs_stats = vk_zalloc2(&device->vk.alloc,
-                                          allocator,
-                                          sizeof(stats),
-                                          8,
-                                          VK_SYSTEM_ALLOCATION_SCOPE_OBJECT);
+   for (unsigned slot = 0; slot < 2; slot++) {
+      pco_shader *pco = *(slot ? fs : vs);
+      if (!pco)
+         continue;
 
-      if (!gfx_pipeline->vs_stats)
-         return vk_error(device, VK_ERROR_OUT_OF_HOST_MEMORY);
+      const struct pvr_stats stats = pco_get_pvr_stats(pco);
+      if (!pvr_cached_shaders_set_stage(cached,
+                                        slot,
+                                        pco_shader_data(pco),
+                                        pco_shader_binary_data(pco),
+                                        pco_shader_binary_size(pco),
+                                        &stats)) {
+         result = vk_error(device, VK_ERROR_OUT_OF_HOST_MEMORY);
+         goto err_unref_cached;
+      }
+   }
 
-      memcpy(gfx_pipeline->vs_stats, &stats, sizeof(stats));
+   if (*fs) {
+      nir_shader *fs_nir = nir_shaders[MESA_SHADER_FRAGMENT];
+
+      cached->fs_varyings_used =
+         fs_nir->info.inputs_read &
+         BITFIELD64_RANGE(VARYING_SLOT_VAR0, MAX_VARYING);
+
+      u_foreach_bit64 (varying, cached->fs_varyings_used) {
+         nir_variable *var =
+            nir_find_variable_with_location(fs_nir, nir_var_shader_in, varying);
+         assert(var);
+
+         cached->fs_interp[varying - VARYING_SLOT_VAR0] =
+            var->data.interpolation;
+      }
    }
 
    if (pCreateInfo->flags &
        VK_PIPELINE_CREATE_CAPTURE_INTERNAL_REPRESENTATIONS_BIT_KHR) {
       gfx_pipeline->vs_nir_str =
          nir_shader_as_str(nir_shaders[MESA_SHADER_VERTEX], NULL);
+      if (*fs) {
+         gfx_pipeline->fs_nir_str =
+            nir_shader_as_str(nir_shaders[MESA_SHADER_FRAGMENT], NULL);
+      }
+   }
+
+   /* The cache object has its own copy of the pointers in the data. */
+   pvr_graphics_free_shader_data(shader_data);
+   ralloc_free(shader_mem_ctx);
+
+   if (cache)
+      cached = pvr_cached_shaders_add(cache, cached);
+
+   *cached_out = cached;
+   return VK_SUCCESS;
+
+err_unref_cached:
+   pvr_cached_shaders_unref(device, cached);
+err_free_build_context:
+   /* XCLIPSE: the descriptor bindings and xfb info are owned by the
+    * compile's data until they are copied into the cache object.
+    */
+   pvr_graphics_free_shader_data(shader_data);
+   ralloc_free(shader_mem_ctx);
+   if (mrt_setup_owned)
+      pvr_arch_destroy_mrt_setup(device, &mrt_setup);
+   return result;
+}
+
+/* Compiles (or finds) the shaders, uploads them and builds the PDS programs. */
+static VkResult
+pvr_graphics_pipeline_compile(struct pvr_device *const device,
+                              struct vk_pipeline_cache *cache,
+                              const VkGraphicsPipelineCreateInfo *pCreateInfo,
+                              const VkAllocationCallbacks *const allocator,
+                              struct pvr_graphics_pipeline *const gfx_pipeline,
+                              const struct vk_graphics_pipeline_state *state,
+                              bool *cache_hit)
+{
+   struct vk_pipeline_layout *layout = gfx_pipeline->base.layout;
+   const uint32_t cache_line_size =
+      pvr_get_slc_cache_line_size(&device->pdevice->dev_info);
+   const VkPipelineCreateFlags2KHR flags =
+      vk_graphics_pipeline_create_flags(pCreateInfo);
+   const bool bypass = pvr_pipeline_cache_bypass(flags);
+   VkResult result;
+
+   struct pvr_vertex_shader_state *vertex_state =
+      &gfx_pipeline->shader_state.vertex;
+   struct pvr_fragment_shader_state *fragment_state =
+      &gfx_pipeline->shader_state.fragment;
+
+   struct pvr_cached_shaders *cached = NULL;
+   uint8_t key[PVR_CACHED_KEY_SIZE];
+
+   struct pvr_pds_vertex_dma vtx_dma_descriptions[PVR_MAX_VERTEX_ATTRIB_DMAS];
+   uint32_t vtx_dma_count = 0;
+
+   *cache_hit = false;
+
+   pvr_graphics_pipeline_key(device, pCreateInfo, gfx_pipeline, state, key);
+
+   bool mem_hit = false;
+   if (cache && !bypass)
+      cached = pvr_cached_shaders_lookup(cache, key, &mem_hit);
+
+   /* XCLIPSE: found in the cache (memory or disk): no shader is compiled.
+    * VK_EXT_pipeline_creation_feedback only reports APPLICATION_PIPELINE_CACHE_HIT
+    * for a pipeline found in the cache the application passed in (dEQP
+    * creation_feedback.*_no_cache), not in the device-wide one, and, as
+    * in the common runtime, not for an entry read from the disk cache.
+    */
+   *cache_hit = cached && mem_hit && cache != device->vk.mem_cache;
+
+   if (!cached) {
+      if (flags & VK_PIPELINE_CREATE_2_FAIL_ON_PIPELINE_COMPILE_REQUIRED_BIT_KHR)
+         return VK_PIPELINE_COMPILE_REQUIRED;
+
+      result = pvr_graphics_shaders_compile(device,
+                                            bypass ? NULL : cache,
+                                            pCreateInfo,
+                                            gfx_pipeline,
+                                            state,
+                                            key,
+                                            &cached);
+      if (result != VK_SUCCESS)
+         return result;
+   }
+
+   const bool has_fs = cached->flags & PVR_CACHED_HAS_STAGE1;
+   const bool capture_stats =
+      pCreateInfo->flags & VK_PIPELINE_CREATE_CAPTURE_STATISTICS_BIT_KHR;
+
+   if (!pvr_cached_stage_clone_data(&cached->stage[0],
+                                    true,
+                                    &gfx_pipeline->vs_data)) {
+      result = vk_error(device, VK_ERROR_OUT_OF_HOST_MEMORY);
+      goto err_unref_cached;
+   }
+
+   if (has_fs && !pvr_cached_stage_clone_data(&cached->stage[1],
+                                              false,
+                                              &gfx_pipeline->fs_data)) {
+      result = vk_error(device, VK_ERROR_OUT_OF_HOST_MEMORY);
+      goto err_free_shader_data;
+   }
+
+   pvr_vertex_state_save(gfx_pipeline);
+
+   if (capture_stats) {
+      gfx_pipeline->vs_stats = vk_zalloc2(&device->vk.alloc,
+                                          allocator,
+                                          sizeof(*gfx_pipeline->vs_stats),
+                                          8,
+                                          VK_SYSTEM_ALLOCATION_SCOPE_OBJECT);
+      if (!gfx_pipeline->vs_stats) {
+         result = vk_error(device, VK_ERROR_OUT_OF_HOST_MEMORY);
+         goto err_free_shader_data;
+      }
+
+      memcpy(gfx_pipeline->vs_stats,
+             &cached->stage[0].stats,
+             sizeof(*gfx_pipeline->vs_stats));
+
+      if (has_fs) {
+         gfx_pipeline->fs_stats = vk_zalloc2(&device->vk.alloc,
+                                             allocator,
+                                             sizeof(*gfx_pipeline->fs_stats),
+                                             8,
+                                             VK_SYSTEM_ALLOCATION_SCOPE_OBJECT);
+         if (!gfx_pipeline->fs_stats) {
+            result = vk_error(device, VK_ERROR_OUT_OF_HOST_MEMORY);
+            goto err_free_shader_data;
+         }
+
+         memcpy(gfx_pipeline->fs_stats,
+                &cached->stage[1].stats,
+                sizeof(*gfx_pipeline->fs_stats));
+      }
    }
 
    pvr_graphics_pipeline_setup_vertex_dma(gfx_pipeline,
@@ -3361,48 +3992,29 @@ pvr_graphics_pipeline_compile(struct pvr_device *const device,
                                           &vtx_dma_count);
 
    result = pvr_gpu_upload_usc(device,
-                               pco_shader_binary_data(*vs),
-                               pco_shader_binary_size(*vs),
+                               cached->stage[0].binary,
+                               cached->stage[0].binary_size,
                                cache_line_size,
                                &vertex_state->shader_bo);
    if (result != VK_SUCCESS)
-      goto err_free_build_context;
+      goto err_free_shader_data;
 
    result = pvr_pipeline_xfb_shader_state_init(device, gfx_pipeline, allocator);
    if (result != VK_SUCCESS)
       goto err_free_vertex_bo;
 
-   if (*fs) {
-      pvr_fragment_state_save(gfx_pipeline, *fs);
-      fragment_state->is_passthrough = build_fs_passthrough;
-
-      if (pCreateInfo->flags & VK_PIPELINE_CREATE_CAPTURE_STATISTICS_BIT_KHR) {
-         struct pvr_stats stats = pco_get_pvr_stats(*fs);
-         gfx_pipeline->fs_stats = vk_zalloc2(&device->vk.alloc,
-                                             allocator,
-                                             sizeof(stats),
-                                             8,
-                                             VK_SYSTEM_ALLOCATION_SCOPE_OBJECT);
-
-         if (!gfx_pipeline->fs_stats)
-            return vk_error(device, VK_ERROR_OUT_OF_HOST_MEMORY);
-
-         memcpy(gfx_pipeline->fs_stats, &stats, sizeof(stats));
-      }
-
-      if (pCreateInfo->flags &
-          VK_PIPELINE_CREATE_CAPTURE_INTERNAL_REPRESENTATIONS_BIT_KHR) {
-         gfx_pipeline->fs_nir_str =
-            nir_shader_as_str(nir_shaders[MESA_SHADER_FRAGMENT], NULL);
-      }
+   if (has_fs) {
+      pvr_fragment_state_save(gfx_pipeline);
+      fragment_state->is_passthrough = cached->flags & PVR_CACHED_FS_PASSTHROUGH;
 
       pvr_graphics_pipeline_setup_fragment_coeff_program(
          gfx_pipeline,
-         nir_shaders[MESA_SHADER_FRAGMENT]);
+         cached->fs_varyings_used,
+         cached->fs_interp);
 
       result = pvr_gpu_upload_usc(device,
-                                  pco_shader_binary_data(*fs),
-                                  pco_shader_binary_size(*fs),
+                                  cached->stage[1].binary,
+                                  cached->stage[1].binary_size,
                                   cache_line_size,
                                   &fragment_state->shader_bo);
       if (result != VK_SUCCESS)
@@ -3416,7 +4028,7 @@ pvr_graphics_pipeline_compile(struct pvr_device *const device,
 
       result = pvr_pds_fragment_program_create(device,
                                                allocator,
-                                               *fs,
+                                               &gfx_pipeline->fs_data,
                                                fragment_state);
       if (result != VK_SUCCESS)
          goto err_free_coeff_program;
@@ -3464,7 +4076,7 @@ pvr_graphics_pipeline_compile(struct pvr_device *const device,
    /* assert(pvr_pds_descriptor_program_variables.temp_buff_total_size == 0); */
    /* TODO: Implement spilling with the above. */
 
-   ralloc_free(shader_mem_ctx);
+   pvr_cached_shaders_unref(device, cached);
 
    return VK_SUCCESS;
 
@@ -3477,27 +4089,39 @@ err_free_vertex_attrib_program:
       pvr_pds_vertex_attrib_program_destroy(device, allocator, attrib_program);
    }
 err_free_frag_descriptor_program:
-   pvr_pds_descriptor_program_destroy(device,
-                                      allocator,
-                                      &fragment_state->descriptor_state);
+   if (has_fs) {
+      pvr_pds_descriptor_program_destroy(device,
+                                         allocator,
+                                         &fragment_state->descriptor_state);
+   }
 err_free_frag_program:
-   vk_free2(&device->vk.alloc,
-            allocator,
-            fragment_state->pds_fragment_program_buffer);
+   if (has_fs) {
+      vk_free2(&device->vk.alloc,
+               allocator,
+               fragment_state->pds_fragment_program_buffer);
+   }
 err_free_coeff_program:
-   vk_free2(&device->vk.alloc,
-            allocator,
-            fragment_state->pds_coeff_program_buffer);
+   if (has_fs) {
+      vk_free2(&device->vk.alloc,
+               allocator,
+               fragment_state->pds_coeff_program_buffer);
+   }
 err_free_fragment_bo:
-   pvr_bo_suballoc_free(fragment_state->shader_bo);
+   if (has_fs)
+      pvr_bo_suballoc_free(fragment_state->shader_bo);
 err_free_pipeline_xfb_state:
    pvr_pipeline_xfb_shader_state_fini(device, gfx_pipeline, allocator);
 err_free_vertex_bo:
    pvr_bo_suballoc_free(vertex_state->shader_bo);
-err_free_build_context:
-   ralloc_free(shader_mem_ctx);
-   if (!pCreateInfo->renderPass)
-      pvr_arch_destroy_mrt_setup(device, &mrt_setup);
+err_free_shader_data:
+   vk_free2(&device->vk.alloc, allocator, gfx_pipeline->vs_stats);
+   vk_free2(&device->vk.alloc, allocator, gfx_pipeline->fs_stats);
+   gfx_pipeline->vs_stats = NULL;
+   gfx_pipeline->fs_stats = NULL;
+   pvr_pipeline_destroy_shader_data(&gfx_pipeline->vs_data, true);
+   pvr_pipeline_destroy_shader_data(&gfx_pipeline->fs_data, false);
+err_unref_cached:
+   pvr_cached_shaders_unref(device, cached);
    return result;
 }
 
@@ -3594,7 +4218,8 @@ pvr_graphics_pipeline_init(struct pvr_device *device,
                            struct vk_pipeline_cache *cache,
                            const VkGraphicsPipelineCreateInfo *pCreateInfo,
                            const VkAllocationCallbacks *allocator,
-                           struct pvr_graphics_pipeline *gfx_pipeline)
+                           struct pvr_graphics_pipeline *gfx_pipeline,
+                           bool *cache_hit)
 {
    struct vk_dynamic_graphics_state *const dynamic_state =
       &gfx_pipeline->dynamic_state;
@@ -3669,9 +4294,13 @@ pvr_graphics_pipeline_init(struct pvr_device *device,
                                           pCreateInfo,
                                           allocator,
                                           gfx_pipeline,
-                                          &state);
-   if (result != VK_SUCCESS)
+                                          &state,
+                                          cache_hit);
+   if (result != VK_SUCCESS) {
+      ralloc_free((void *)gfx_pipeline->vs_nir_str);
+      ralloc_free((void *)gfx_pipeline->fs_nir_str);
       goto err_pipeline_finish;
+   }
 
    return VK_SUCCESS;
 
@@ -3687,7 +4316,8 @@ pvr_graphics_pipeline_create(struct pvr_device *device,
                              struct vk_pipeline_cache *cache,
                              const VkGraphicsPipelineCreateInfo *pCreateInfo,
                              const VkAllocationCallbacks *allocator,
-                             VkPipeline *const pipeline_out)
+                             VkPipeline *const pipeline_out,
+                             bool *cache_hit)
 {
    struct pvr_graphics_pipeline *gfx_pipeline;
    VkResult result;
@@ -3705,7 +4335,8 @@ pvr_graphics_pipeline_create(struct pvr_device *device,
                                        cache,
                                        pCreateInfo,
                                        allocator,
-                                       gfx_pipeline);
+                                       gfx_pipeline,
+                                       cache_hit);
    if (result != VK_SUCCESS) {
       vk_free2(&device->vk.alloc, allocator, gfx_pipeline);
       return result;
@@ -3728,36 +4359,37 @@ VkResult PVR_PER_ARCH(CreateGraphicsPipelines)(
    VK_FROM_HANDLE(pvr_device, device, _device);
    VkResult result = VK_SUCCESS;
 
+   /* XCLIPSE: without an application cache the device-wide one is used. */
+   if (!cache)
+      cache = device->vk.mem_cache;
+
    for (uint32_t i = 0; i < createInfoCount; i++) {
       const VkPipelineCreateFlags2KHR flags =
          vk_graphics_pipeline_create_flags(&pCreateInfos[i]);
-
-      /* XCLIPSE: nothing is ever found in a pipeline cache, so every pipeline
-       * needs a compile (VK_EXT_pipeline_creation_cache_control).
-       */
-      if (flags &
-          VK_PIPELINE_CREATE_2_FAIL_ON_PIPELINE_COMPILE_REQUIRED_BIT_KHR) {
-         result = VK_PIPELINE_COMPILE_REQUIRED;
-         pPipelines[i] = VK_NULL_HANDLE;
-
-         if (flags & VK_PIPELINE_CREATE_2_EARLY_RETURN_ON_FAILURE_BIT_KHR) {
-            for (uint32_t j = i + 1; j < createInfoCount; j++)
-               pPipelines[j] = VK_NULL_HANDLE;
-            break;
-         }
-
-         continue;
-      }
+      const uint64_t start = os_time_get_nano();
+      bool cache_hit = false;
 
       const VkResult local_result =
          pvr_graphics_pipeline_create(device,
                                       cache,
                                       &pCreateInfos[i],
                                       pAllocator,
-                                      &pPipelines[i]);
-      if (local_result != VK_SUCCESS) {
-         result = local_result;
-         pPipelines[i] = VK_NULL_HANDLE;
+                                      &pPipelines[i],
+                                      &cache_hit);
+      if (local_result == VK_SUCCESS) {
+         pvr_fill_creation_feedback(pCreateInfos[i].pNext,
+                                    cache_hit,
+                                    os_time_get_nano() - start);
+         continue;
+      }
+
+      result = local_result;
+      pPipelines[i] = VK_NULL_HANDLE;
+
+      if (flags & VK_PIPELINE_CREATE_2_EARLY_RETURN_ON_FAILURE_BIT_KHR) {
+         for (uint32_t j = i + 1; j < createInfoCount; j++)
+            pPipelines[j] = VK_NULL_HANDLE;
+         break;
       }
    }
 
