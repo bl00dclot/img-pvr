@@ -66,6 +66,7 @@
 #include "pvr_winsys.h"
 #include "pdsc/pdsc_isa_pack.h"
 #include "pdsc/pdsc_precomp_programs.h"
+#include "util/hash_table.h"
 #include "util/bitscan.h"
 #include "util/bitset.h"
 #include "util/compiler.h"
@@ -561,6 +562,140 @@ pvr_cmd_buffer_upload_pds_data(struct pvr_cmd_buffer *const cmd_buffer,
                                          pds_upload_out);
 }
 
+static uint32_t pvr_eot_cache_key_hash(const void *key)
+{
+   return _mesa_hash_data(key, sizeof(struct pvr_eot_cache_key));
+}
+
+static bool pvr_eot_cache_key_equal(const void *a, const void *b)
+{
+   return !memcmp(a, b, sizeof(struct pvr_eot_cache_key));
+}
+
+/* Builds and uploads the USC end-of-tile program and its PDS pixel event data for a new entry. */
+static VkResult pvr_eot_cache_entry_init(struct pvr_device *const device,
+                                         const struct pvr_eot_props *const props,
+                                         struct pvr_eot_cache_entry *const eot)
+{
+   struct pvr_pds_event_program pixel_event_program = {
+      /* No data to DMA, just a DOUTU needed. */
+      .num_emit_word_pairs = 0,
+   };
+   uint32_t staging_buffer[device->pixel_event_data_size_in_dwords];
+   struct pvr_eot_props build_props = *props;
+   VkResult result;
+
+   pco_shader *shader = pvr_usc_eot(device->pdevice->pco_ctx,
+                                    &build_props,
+                                    &device->pdevice->dev_info);
+   const uint32_t usc_temp_count = pco_shader_data(shader)->common.temps;
+
+   result = pvr_gpu_upload_usc(device,
+                               pco_shader_binary_data(shader),
+                               pco_shader_binary_size(shader),
+                               4,
+                               &eot->usc_bo);
+   ralloc_free(shader);
+   if (result != VK_SUCCESS)
+      return result;
+
+   pvr_pds_setup_doutu(&pixel_event_program.task_control,
+                       eot->usc_bo->dev_addr.addr,
+                       usc_temp_count,
+                       ROGUE_PDSINST_DOUTU_SAMPLE_RATE_INSTANCE,
+                       false);
+
+   pvr_pds_generate_pixel_event_data_segment(&pixel_event_program,
+                                             staging_buffer,
+                                             &device->pdevice->dev_info);
+
+   result = pvr_gpu_upload_pds(device,
+                               staging_buffer,
+                               device->pixel_event_data_size_in_dwords,
+                               4,
+                               NULL,
+                               0,
+                               0,
+                               4,
+                               &eot->pds);
+   if (result != VK_SUCCESS)
+      pvr_bo_suballoc_free(eot->usc_bo);
+
+   return result;
+}
+
+/* XCLIPSE: the end-of-tile program for these props from the device cache, built and uploaded on
+ * first use (pvr_device.h). Returns false when the cache is full or an upload fails; the caller
+ * then builds a per-job program as before.
+ */
+static bool pvr_eot_cache_get(struct pvr_device *const device,
+                              const struct pvr_eot_props *const props,
+                              struct pvr_pds_upload *const pds_upload_out)
+{
+   struct pvr_device_eot_cache *const cache = &device->eot_cache;
+   struct pvr_eot_cache_entry *eot = NULL;
+   struct pvr_eot_cache_key key = {
+      .emit_count = props->emit_count,
+      .msaa_samples = props->msaa_samples,
+      .num_output_regs = props->num_output_regs,
+   };
+   bool found = false;
+
+   assert(!props->shared_words);
+   assert(props->emit_count <= ARRAY_SIZE(key.state_words));
+   memcpy(key.state_words,
+          props->state_words,
+          props->emit_count * sizeof(key.state_words[0]));
+   memcpy(key.tile_buffer_addrs,
+          props->tile_buffer_addrs,
+          sizeof(key.tile_buffer_addrs));
+
+   simple_mtx_lock(&cache->mtx);
+
+   if (!cache->ht) {
+      cache->ht = _mesa_hash_table_create(NULL,
+                                          pvr_eot_cache_key_hash,
+                                          pvr_eot_cache_key_equal);
+      if (!cache->ht)
+         goto out_unlock;
+   }
+
+   struct hash_entry *entry = _mesa_hash_table_search(cache->ht, &key);
+   if (entry) {
+      eot = entry->data;
+      found = true;
+      goto out_unlock;
+   }
+
+   if (_mesa_hash_table_num_entries(cache->ht) >= PVR_EOT_CACHE_MAX_ENTRIES)
+      goto out_unlock;
+
+   eot = vk_zalloc(&device->vk.alloc,
+                   sizeof(*eot),
+                   8,
+                   VK_SYSTEM_ALLOCATION_SCOPE_DEVICE);
+   if (!eot)
+      goto out_unlock;
+
+   eot->key = key;
+
+   if (pvr_eot_cache_entry_init(device, props, eot) != VK_SUCCESS) {
+      vk_free(&device->vk.alloc, eot);
+      goto out_unlock;
+   }
+
+   _mesa_hash_table_insert(cache->ht, &eot->key, eot);
+   found = true;
+
+out_unlock:
+   if (found)
+      *pds_upload_out = eot->pds;
+
+   simple_mtx_unlock(&cache->mtx);
+
+   return found;
+}
+
 /* pbe_cs_words must be an array of length emit_count with
  * ROGUE_NUM_PBESTATE_STATE_WORDS entries
  */
@@ -613,6 +748,9 @@ static VkResult pvr_sub_cmd_gfx_per_job_fragment_programs_create_and_upload(
       if (!props.msaa_samples)
          props.msaa_samples = 1;
    }
+
+   if (pvr_eot_cache_get(device, &props, pds_upload_out))
+      return VK_SUCCESS;
 
    eot =
       pvr_usc_eot(device->pdevice->pco_ctx, &props, &device->pdevice->dev_info);

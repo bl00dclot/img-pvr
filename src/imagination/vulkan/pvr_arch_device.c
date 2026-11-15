@@ -33,6 +33,7 @@
 #include "pvr_rt_dataset.h"
 #include "pvr_tex_state.h"
 #include "pvr_utrace.h"
+#include "util/hash_table.h"
 #include "util/os_misc.h"
 
 #define PVR_GLOBAL_FREE_LIST_INITIAL_SIZE (2U * 1024U * 1024U)
@@ -670,6 +671,50 @@ static void pvr_device_finish_tile_buffer_state(struct pvr_device *device)
    pvr_device_free_tile_buffer_state(device);
 }
 
+static void pvr_device_init_csb_bo_pool(struct pvr_device *device)
+{
+   simple_mtx_init(&device->csb_bo_pool.mtx, mtx_plain);
+   list_inithead(&device->csb_bo_pool.bos);
+   device->csb_bo_pool.count = 0;
+}
+
+static void pvr_device_finish_csb_bo_pool(struct pvr_device *device)
+{
+   simple_mtx_destroy(&device->csb_bo_pool.mtx);
+
+   list_for_each_entry_safe (struct pvr_bo,
+                             pvr_bo,
+                             &device->csb_bo_pool.bos,
+                             link) {
+      list_del(&pvr_bo->link);
+      pvr_bo_free(device, pvr_bo);
+   }
+}
+
+static void pvr_device_init_eot_cache(struct pvr_device *device)
+{
+   simple_mtx_init(&device->eot_cache.mtx, mtx_plain);
+   device->eot_cache.ht = NULL;
+}
+
+static void pvr_device_finish_eot_cache(struct pvr_device *device)
+{
+   simple_mtx_destroy(&device->eot_cache.mtx);
+
+   if (!device->eot_cache.ht)
+      return;
+
+   hash_table_foreach (device->eot_cache.ht, entry) {
+      struct pvr_eot_cache_entry *eot = entry->data;
+
+      pvr_bo_suballoc_free(eot->pds.pvr_bo);
+      pvr_bo_suballoc_free(eot->usc_bo);
+      vk_free(&device->vk.alloc, eot);
+   }
+
+   _mesa_hash_table_destroy(device->eot_cache.ht, NULL);
+}
+
 static void pvr_device_init_default_sampler_state(struct pvr_device *device)
 {
    pvr_csb_pack (&device->input_attachment_sampler,
@@ -914,6 +959,8 @@ VkResult PVR_PER_ARCH(create_device)(struct pvr_physical_device *pdevice,
       goto err_pvr_finish_graphics_static_clear_state;
 
    pvr_device_init_tile_buffer_state(device);
+   pvr_device_init_eot_cache(device);
+   pvr_device_init_csb_bo_pool(device);
 
    result = pvr_arch_queues_create(device, pCreateInfo);
    if (result != VK_SUCCESS)
@@ -970,6 +1017,8 @@ err_pvr_spm_finish_scratch_buffer_store:
    pvr_arch_queues_destroy(device);
 
 err_pvr_finish_tile_buffer_state:
+   pvr_device_finish_csb_bo_pool(device);
+   pvr_device_finish_eot_cache(device);
    pvr_device_finish_tile_buffer_state(device);
    pvr_arch_device_finish_spm_load_state(device);
 
@@ -1059,6 +1108,8 @@ void PVR_PER_ARCH(destroy_device)(struct pvr_device *device,
    pvr_robustness_buffer_finish(device);
    pvr_spm_finish_scratch_buffer_store(device);
    pvr_arch_queues_destroy(device);
+   pvr_device_finish_csb_bo_pool(device);
+   pvr_device_finish_eot_cache(device);
    pvr_device_finish_tile_buffer_state(device);
    pvr_arch_device_finish_spm_load_state(device);
    pvr_device_finish_graphics_static_clear_state(device);

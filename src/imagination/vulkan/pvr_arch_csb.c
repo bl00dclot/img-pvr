@@ -121,12 +121,14 @@ static bool pvr_csb_buffer_extend(struct pvr_csb *csb)
    STATIC_ASSERT(ROGUE_VDMCTRL_GUARD_SIZE_DEFAULT ==
                  ROGUE_CDMCTRL_GUARD_SIZE_DEFAULT);
 
-   result = pvr_bo_alloc(csb->device,
-                         csb->device->heaps.general_heap,
-                         PVR_CMD_BUFFER_CSB_BO_SIZE,
-                         cache_line_size,
-                         PVR_BO_ALLOC_FLAG_CPU_MAPPED,
-                         &pvr_bo);
+   pvr_bo = pvr_csb_bo_pool_get(csb->device);
+   result = pvr_bo ? VK_SUCCESS
+                   : pvr_bo_alloc(csb->device,
+                                  csb->device->heaps.general_heap,
+                                  PVR_CMD_BUFFER_CSB_BO_SIZE,
+                                  cache_line_size,
+                                  PVR_BO_ALLOC_FLAG_CPU_MAPPED,
+                                  &pvr_bo);
    if (result != VK_SUCCESS) {
       vk_error(csb->device, result);
       csb->status = result;

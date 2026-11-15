@@ -56,6 +56,22 @@ struct pvr_compute_query_shader {
    struct pvr_pds_upload pds_sec_code;
 };
 
+/* XCLIPSE: end-of-tile program cache (struct pvr_device::eot_cache). The key is every input of
+ * pvr_usc_eot(); unused slots are zero. */
+struct pvr_eot_cache_key {
+   uint32_t emit_count;
+   uint32_t msaa_samples;
+   uint32_t num_output_regs;
+   uint32_t state_words[PVR_MAX_COLOR_ATTACHMENTS][ROGUE_NUM_PBESTATE_STATE_WORDS];
+   uint64_t tile_buffer_addrs[PVR_MAX_COLOR_ATTACHMENTS];
+};
+
+struct pvr_eot_cache_entry {
+   struct pvr_eot_cache_key key;
+   struct pvr_suballoc_bo *usc_bo;
+   struct pvr_pds_upload pds;
+};
+
 struct pvr_device {
    struct vk_device vk;
    struct pvr_instance *instance;
@@ -138,6 +154,28 @@ struct pvr_device {
       struct pvr_bo *buffers[PVR_MAX_TILE_BUFFER_COUNT];
       uint32_t buffer_count;
    } tile_buffer_state;
+
+   /* XCLIPSE: end-of-tile programs (USC code and the PDS pixel event data that launches it), keyed
+    * by everything pvr_usc_eot() bakes in. Renders with the same attachment setup then share one
+    * upload instead of compiling the program again per render. Entries live until the device is
+    * destroyed; past PVR_EOT_CACHE_MAX_ENTRIES the per-render path is used.
+    */
+   struct pvr_device_eot_cache {
+      simple_mtx_t mtx;
+      struct hash_table *ht;
+   } eot_cache;
+#define PVR_EOT_CACHE_MAX_ENTRIES 256U
+
+   /* XCLIPSE: control stream buffers handed back by finished control stream builders, reused by
+    * the next ones. Allocating and freeing one per render (kernel allocation, mmap, munmap, free)
+    * was about a quarter of the CPU time of a pass-heavy frame.
+    */
+   struct pvr_device_csb_bo_pool {
+      simple_mtx_t mtx;
+      struct list_head bos;
+      uint32_t count;
+   } csb_bo_pool;
+#define PVR_CSB_BO_POOL_MAX 128U
 
    struct pvr_spm_scratch_buffer_store spm_scratch_buffer_store;
 

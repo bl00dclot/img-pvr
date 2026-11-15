@@ -105,6 +105,41 @@ void pvr_csb_init(struct pvr_device *device,
  *
  * \sa #pvr_csb_init()
  */
+struct pvr_bo *pvr_csb_bo_pool_get(struct pvr_device *device)
+{
+   struct pvr_device_csb_bo_pool *pool = &device->csb_bo_pool;
+   struct pvr_bo *pvr_bo = NULL;
+
+   simple_mtx_lock(&pool->mtx);
+   if (pool->count) {
+      pvr_bo = list_first_entry(&pool->bos, struct pvr_bo, link);
+      list_del(&pvr_bo->link);
+      pool->count--;
+   }
+   simple_mtx_unlock(&pool->mtx);
+
+   return pvr_bo;
+}
+
+bool pvr_csb_bo_pool_put(struct pvr_device *device, struct pvr_bo *pvr_bo)
+{
+   struct pvr_device_csb_bo_pool *pool = &device->csb_bo_pool;
+   bool pooled = false;
+
+   if (pvr_bo->bo->size != PVR_CMD_BUFFER_CSB_BO_SIZE || !pvr_bo->bo->map)
+      return false;
+
+   simple_mtx_lock(&pool->mtx);
+   if (pool->count < PVR_CSB_BO_POOL_MAX) {
+      list_add(&pvr_bo->link, &pool->bos);
+      pool->count++;
+      pooled = true;
+   }
+   simple_mtx_unlock(&pool->mtx);
+
+   return pooled;
+}
+
 void pvr_csb_finish(struct pvr_csb *csb)
 {
 #if MESA_DEBUG
@@ -118,7 +153,8 @@ void pvr_csb_finish(struct pvr_csb *csb)
    } else {
       list_for_each_entry_safe (struct pvr_bo, pvr_bo, &csb->pvr_bo_list, link) {
          list_del(&pvr_bo->link);
-         pvr_bo_free(csb->device, pvr_bo);
+         if (!pvr_csb_bo_pool_put(csb->device, pvr_bo))
+            pvr_bo_free(csb->device, pvr_bo);
       }
    }
 

@@ -249,6 +249,10 @@ void pvr_csb_init(struct pvr_device *device,
                   enum pvr_cmd_stream_type stream_type,
                   struct pvr_csb *csb);
 void pvr_csb_finish(struct pvr_csb *csb);
+
+/* XCLIPSE: the device's pool of reusable control stream buffers (struct pvr_device::csb_bo_pool). */
+struct pvr_bo *pvr_csb_bo_pool_get(struct pvr_device *device);
+bool pvr_csb_bo_pool_put(struct pvr_device *device, struct pvr_bo *pvr_bo);
 VkResult pvr_csb_bake(struct pvr_csb *csb, struct list_head *bo_list_out);
 
 #ifdef PVR_PER_ARCH
