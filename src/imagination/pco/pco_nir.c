@@ -551,6 +551,8 @@ static void pco_nir_opt(pco_ctx *ctx, nir_shader *nir, pco_data *data, bool alge
 
       if (algebraic) {
          NIR_PASS(progress, nir, nir_opt_algebraic);
+         if (nir->info.stage == MESA_SHADER_FRAGMENT)
+            NIR_PASS(progress, nir, pco_nir_opt_frag_coord_trunc);
          NIR_PASS(progress, nir, pco_nir_lower_algebraic);
       }
 
@@ -1056,7 +1058,7 @@ void pco_lower_nir(pco_ctx *ctx, nir_shader *nir, pco_data *data)
 
    if (nir->info.stage == MESA_SHADER_FRAGMENT) {
       if (!internal)
-         NIR_PASS(_, nir, pco_nir_lower_alpha_to_coverage);
+         NIR_PASS(_, nir, pco_nir_lower_alpha_to_coverage, &data->fs);
 
       NIR_PASS(_, nir, nir_lower_blend, &data->fs.blend_opts);
 
@@ -1067,10 +1069,10 @@ void pco_lower_nir(pco_ctx *ctx, nir_shader *nir, pco_data *data)
       NIR_PASS(_, nir, nir_opt_peephole_select, &peep_opts);
       NIR_PASS(_, nir, pco_nir_lower_interpolation, &data->fs);
       if (!internal)
-         NIR_PASS(_, nir, pco_nir_lower_sample_mask_out);
+         NIR_PASS(_, nir, pco_nir_lower_sample_mask_out, &data->fs);
       NIR_PASS(_, nir, pco_nir_pfo, &data->fs);
       NIR_PASS(_, nir, nir_lower_is_helper_invocation);
-      NIR_PASS(_, nir, pco_nir_lower_fs_intrinsics);
+      NIR_PASS(_, nir, pco_nir_lower_fs_intrinsics, &data->fs);
    } else if (nir->info.stage == MESA_SHADER_VERTEX) {
       /* If needed, duplicate the point size for xfb prior to it being clamped.
        */

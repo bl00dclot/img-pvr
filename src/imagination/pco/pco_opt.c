@@ -679,16 +679,6 @@ bool pco_dce(pco_shader *shader)
    return progress;
 }
 
-static inline bool only_uncollated_elems(pco_instr *vec)
-{
-   pco_foreach_instr_src (psrc, vec) {
-      if (pco_ref_get_chans(*psrc) > 1)
-         return false;
-   }
-
-   return true;
-}
-
 /**
  * \brief Shrinks vectors with unused components.
  *
@@ -702,10 +692,6 @@ bool pco_shrink_vecs(pco_shader *shader)
    pco_foreach_func_in_shader (func, shader) {
       pco_foreach_instr_in_func (vec, func) {
          if (vec->op != PCO_OP_VEC)
-            continue;
-
-         /* Can't shrink if has collated elems. */
-         if (!only_uncollated_elems(vec))
             continue;
 
          pco_ref *pdest = &vec->dest[0];
@@ -740,8 +726,26 @@ bool pco_shrink_vecs(pco_shader *shader)
          if (chans_used == chans)
             continue;
 
+         /* XCLIPSE: elements may be collated (multi-channel, e.g. an iterated varying feeding a
+          * sampler's 16-channel argument); keep the leading elements that cover the used
+          * channels, as long as the cut falls between elements. Without this, each unused
+          * channel after a collated element became a register move in the final shader.
+          */
+         unsigned srcs_used = 0;
+         unsigned chans_covered = 0;
+         pco_foreach_instr_src (psrc, vec) {
+            if (chans_covered >= chans_used)
+               break;
+
+            chans_covered += pco_ref_get_chans(*psrc);
+            ++srcs_used;
+         }
+
+         if (chans_covered != chans_used)
+            continue;
+
          /* Update the vec. */
-         vec->num_srcs = chans_used;
+         vec->num_srcs = srcs_used;
          *pdest = pco_ref_chans(*pdest, chans_used);
 
          progress = true;

@@ -473,6 +473,45 @@ static bool lower_pfo(nir_builder *b, nir_intrinsic_instr *intr, void *cb_data)
    return false;
 }
 
+/* XCLIPSE: the fs meta word, or a field of it, when the pipeline fixes it (pco_fs_data). */
+static inline bool fs_meta_static_field(const pco_fs_data *fs,
+                                        unsigned offset,
+                                        unsigned length,
+                                        uint32_t *value)
+{
+   if (!fs->meta_is_static)
+      return false;
+
+   *value = (fs->meta_static >> offset) & BITFIELD_MASK(length);
+   return true;
+}
+
+static bool shader_has_discards(nir_shader *shader)
+{
+   nir_foreach_function_impl (impl, shader) {
+      nir_foreach_block (block, impl) {
+         nir_foreach_instr (instr, block) {
+            if (instr->type != nir_instr_type_intrinsic)
+               continue;
+
+            switch (nir_instr_as_intrinsic(instr)->intrinsic) {
+            case nir_intrinsic_terminate:
+            case nir_intrinsic_terminate_if:
+            case nir_intrinsic_demote:
+            case nir_intrinsic_demote_if:
+            case nir_intrinsic_demote_samples:
+               return true;
+
+            default:
+               break;
+            }
+         }
+      }
+   }
+
+   return false;
+}
+
 static inline void insert_sample_check(nir_builder *b, nir_def *sample_mask_out)
 {
    nir_def *mask = nir_ishl(b, nir_imm_int(b, 1), nir_load_sample_id(b));
@@ -499,11 +538,22 @@ static bool lower_sample_mask_out(nir_builder *b, nir_intrinsic_instr *intr, UNU
    return true;
 }
 
-bool pco_nir_lower_sample_mask_out(nir_shader *shader)
+bool pco_nir_lower_sample_mask_out(nir_shader *shader, pco_fs_data *fs)
 {
    bool progress = nir_shader_intrinsics_pass(shader, lower_sample_mask_out, nir_metadata_control_flow, NULL);
    if (progress)
       return true;
+
+   /* XCLIPSE: one sample per pixel and sample 0 enabled by a static mask: the check can never
+    * discard, so leave it (and the punch-through it would force) out. */
+   uint32_t sample_mask;
+   if (fs_meta_static_field(fs,
+                            PVR_FS_META_SAMPLE_MASK_OFFSET,
+                            PVR_FS_META_SAMPLE_MASK_LENGTH,
+                            &sample_mask) &&
+       (sample_mask & 1)) {
+      return false;
+   }
 
    /* If the sample check isn't present, then add one ourselves. */
    nir_builder b = nir_builder_at(
@@ -553,7 +603,11 @@ static bool lower_isp_fb(nir_builder *b, struct pfo_state *state)
 
    nir_def *undef = nir_undef(b, 1, 32);
 
-   nir_def *discard_cond = nir_is_helper_invocation(b, 1);
+   /* XCLIPSE: with a static fs meta word the sample check may be gone; a shader with no discard
+    * left gives the ISP nothing to wait for. */
+   nir_def *discard_cond = NULL;
+   if (!state->fs->meta_is_static || shader_has_discards(shader))
+      discard_cond = nir_is_helper_invocation(b, 1);
 
    /* Drop depth writes and discard cond if early fragment tests. */
    if (shader->info.fs.early_fragment_tests) {
@@ -695,8 +749,17 @@ static bool lower_demote_samples(nir_builder *b,
    return true;
 }
 
-bool pco_nir_lower_alpha_to_coverage(nir_shader *shader)
+bool pco_nir_lower_alpha_to_coverage(nir_shader *shader, pco_fs_data *fs)
 {
+   uint32_t a2c_static;
+   if (fs_meta_static_field(fs,
+                            PVR_FS_META_ALPHA_TO_COVERAGE_OFFSET,
+                            PVR_FS_META_ALPHA_TO_COVERAGE_LENGTH,
+                            &a2c_static) &&
+       !a2c_static) {
+      return false;
+   }
+
    nir_builder b = nir_builder_create(nir_shader_get_entrypoint(shader));
    b.cursor =
       nir_before_block(nir_start_block(nir_shader_get_entrypoint(shader)));
@@ -720,7 +783,7 @@ bool pco_nir_lower_alpha_to_coverage(nir_shader *shader)
 
 static bool lower_alpha_to_one(nir_builder *b,
                                nir_intrinsic_instr *intr,
-                               UNUSED void *cb_data)
+                               void *cb_data)
 {
    if (intr->intrinsic != nir_intrinsic_store_output)
       return false;
@@ -737,6 +800,16 @@ static bool lower_alpha_to_one(nir_builder *b,
    /* Skip color write that don't include alpha. */
    if (input->num_components != 4)
       return false;
+
+   const struct pfo_state *state = cb_data;
+   uint32_t a1_static;
+   if (fs_meta_static_field(state->fs,
+                            PVR_FS_META_ALPHA_TO_ONE_OFFSET,
+                            PVR_FS_META_ALPHA_TO_ONE_LENGTH,
+                            &a1_static) &&
+       !a1_static) {
+      return false;
+   }
 
    b->cursor = nir_before_instr(&intr->instr);
 
@@ -1134,13 +1207,21 @@ static bool lower_front_face(nir_builder *b, nir_intrinsic_instr *intr)
    return true;
 }
 
-static bool lower_sample_mask_in(nir_builder *b, nir_intrinsic_instr *intr)
+static bool lower_sample_mask_in(nir_builder *b,
+                                 nir_intrinsic_instr *intr,
+                                 const pco_fs_data *fs)
 {
+   uint32_t mask_static;
    nir_def *mask =
-      nir_ubitfield_extract_imm(b,
-                                nir_load_fs_meta_pco(b),
-                                PVR_FS_META_SAMPLE_MASK_OFFSET,
-                                PVR_FS_META_SAMPLE_MASK_LENGTH);
+      fs_meta_static_field(fs,
+                           PVR_FS_META_SAMPLE_MASK_OFFSET,
+                           PVR_FS_META_SAMPLE_MASK_LENGTH,
+                           &mask_static)
+         ? nir_imm_int(b, mask_static)
+         : nir_ubitfield_extract_imm(b,
+                                     nir_load_fs_meta_pco(b),
+                                     PVR_FS_META_SAMPLE_MASK_OFFSET,
+                                     PVR_FS_META_SAMPLE_MASK_LENGTH);
    mask = nir_iand(b, mask, nir_load_savmsk_vm_pco(b));
    nir_def_rewrite_uses(&intr->def, mask);
    nir_instr_remove(&intr->instr);
@@ -1148,7 +1229,7 @@ static bool lower_sample_mask_in(nir_builder *b, nir_intrinsic_instr *intr)
 }
 
 static bool
-lower_fs_intr(nir_builder *b, nir_intrinsic_instr *intr, UNUSED void *cb_data)
+lower_fs_intr(nir_builder *b, nir_intrinsic_instr *intr, void *cb_data)
 {
    b->cursor = nir_before_instr(&intr->instr);
 
@@ -1157,7 +1238,7 @@ lower_fs_intr(nir_builder *b, nir_intrinsic_instr *intr, UNUSED void *cb_data)
       return lower_front_face(b, intr);
 
    case nir_intrinsic_load_sample_mask_in:
-      return lower_sample_mask_in(b, intr);
+      return lower_sample_mask_in(b, intr, cb_data);
 
    /* Drop these, already handled by nir_lower_is_helper_invocation. */
    case nir_intrinsic_demote:
@@ -1172,14 +1253,93 @@ lower_fs_intr(nir_builder *b, nir_intrinsic_instr *intr, UNUSED void *cb_data)
    return false;
 }
 
-bool pco_nir_lower_fs_intrinsics(nir_shader *shader)
+/* XCLIPSE: whether an ALU source is the x or y window coordinate of the fragment. */
+static bool alu_src_is_frag_coord_xy(const nir_alu_instr *alu, unsigned src)
+{
+   const nir_def *def = alu->src[src].src.ssa;
+   const nir_instr *instr = nir_def_instr((nir_def *)def);
+   if (instr->type != nir_instr_type_intrinsic)
+      return false;
+
+   const nir_intrinsic_instr *intr = nir_instr_as_intrinsic(instr);
+   unsigned component = alu->src[src].swizzle[0];
+
+   switch (intr->intrinsic) {
+   case nir_intrinsic_load_frag_coord:
+      break;
+
+   case nir_intrinsic_load_input:
+   case nir_intrinsic_load_interpolated_input:
+      if (nir_intrinsic_io_semantics(intr).location != VARYING_SLOT_POS)
+         return false;
+
+      component += nir_intrinsic_component(intr);
+      break;
+
+   default:
+      return false;
+   }
+
+   return component < 2;
+}
+
+static bool
+opt_frag_coord_trunc(nir_builder *b, nir_alu_instr *alu, UNUSED void *cb_data)
+{
+   if (alu->def.num_components != 1)
+      return false;
+
+   const nir_alu_instr *inner = alu;
+   if (alu->op == nir_op_i2f32) {
+      nir_instr *src_instr = nir_def_instr(alu->src[0].src.ssa);
+      if (src_instr->type != nir_instr_type_alu)
+         return false;
+
+      inner = nir_instr_as_alu(src_instr);
+      if (inner->op != nir_op_f2i32 || inner->def.num_components != 1 ||
+          alu->src[0].swizzle[0] != 0)
+         return false;
+   } else if (alu->op != nir_op_ftrunc) {
+      return false;
+   }
+
+   if (!alu_src_is_frag_coord_xy(inner, 0))
+      return false;
+
+   b->cursor = nir_before_instr(&alu->instr);
+   nir_def *coord = nir_channel(b, inner->src[0].src.ssa, inner->src[0].swizzle[0]);
+   nir_def_replace(&alu->def, nir_ffloor(b, coord));
+
+   return true;
+}
+
+/**
+ * \brief Truncation of the fragment's window x/y is a floor: they are never negative. The generic
+ * ftrunc lowering (floor, ceil, negate, select) costs several instruction groups per component in
+ * every `texelFetch(s, ivec2(gl_FragCoord.xy), 0)`.
+ *
+ * \param[in,out] shader NIR shader.
+ * 
+eturn True if the pass made progress.
+ */
+bool pco_nir_opt_frag_coord_trunc(nir_shader *shader)
+{
+   assert(shader->info.stage == MESA_SHADER_FRAGMENT);
+
+   return nir_shader_alu_pass(shader,
+                              opt_frag_coord_trunc,
+                              nir_metadata_control_flow,
+                              NULL);
+}
+
+bool pco_nir_lower_fs_intrinsics(nir_shader *shader, pco_fs_data *fs)
 {
    assert(shader->info.stage == MESA_SHADER_FRAGMENT);
 
    return nir_shader_intrinsics_pass(shader,
                                      lower_fs_intr,
                                      nir_metadata_control_flow,
-                                     NULL);
+                                     fs);
 }
 
 static bool
@@ -1459,8 +1619,12 @@ static nir_def *fs_is_single_sampled_meta(nir_builder *b)
 }
 
 /* TODO: revisit */
-static nir_def *fs_is_single_sampled(nir_builder *b)
+static nir_def *fs_is_single_sampled(nir_builder *b, const pco_fs_data *fs)
 {
+   /* XCLIPSE: a static fs meta word is only set for one sample per pixel. */
+   if (!b->shader->info.internal && fs->meta_is_static)
+      return nir_imm_true(b);
+
    return b->shader->info.internal ? fs_is_single_sampled_covmsk(b)
                                    : fs_is_single_sampled_meta(b);
 }
@@ -1498,7 +1662,7 @@ lower_sample_pos(nir_builder *b, nir_intrinsic_instr *intr, pco_fs_data *fs)
    sample_location = nir_u2f32(b, sample_location);
    sample_location = nir_fdiv_imm(b, sample_location, 16.0f);
    sample_location = nir_bcsel(b,
-                               fs_is_single_sampled(b),
+                               fs_is_single_sampled(b, fs),
                                nir_imm_vec2(b, 0.5f, 0.5f),
                                sample_location);
 

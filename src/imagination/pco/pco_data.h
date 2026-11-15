@@ -96,6 +96,13 @@ typedef struct _pco_fs_data {
 
    pco_range meta;
 
+   /* XCLIPSE: set when the pipeline fixes the whole fs meta word (PVR_FS_META_*: no dynamic
+    * multisample or colour-write state, one sample per pixel). The shader then uses meta_static as
+    * a constant instead of testing the shared register per fragment, and with no discard left it
+    * needs no ISP feedback, so it is not a punch-through object. */
+   bool meta_is_static;
+   uint32_t meta_static;
+
    gl_frag_result z_replicate;
 
    /* Blend options. */

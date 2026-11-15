@@ -2744,6 +2744,39 @@ pvr_preprocess_shader_data(pco_data *data,
       if (state->ms)
          nir->info.fs.uses_sample_shading |= state->ms->sample_shading_enable;
 
+      /* XCLIPSE: with one sample per pixel and no dynamic multisample or colour-write state, the
+       * fs meta word (the value pvr_arch_cmd_buffer.c builds per draw for PVR_BUFFER_TYPE_FS_META)
+       * is fixed by the pipeline. Give it to the compiler: the per-fragment sample-mask,
+       * alpha-to-coverage and alpha-to-one code folds away, and a shader without its own discard
+       * stops being a punch-through object (docs/ddk113/TESTING.md, speed).
+       */
+      if (state->ms && state->cb &&
+          state->ms->rasterization_samples == VK_SAMPLE_COUNT_1_BIT &&
+          !BITSET_TEST(state->dynamic, MESA_VK_DYNAMIC_MS_RASTERIZATION_SAMPLES) &&
+          !BITSET_TEST(state->dynamic, MESA_VK_DYNAMIC_MS_SAMPLE_MASK) &&
+          !BITSET_TEST(state->dynamic,
+                       MESA_VK_DYNAMIC_MS_ALPHA_TO_COVERAGE_ENABLE) &&
+          !BITSET_TEST(state->dynamic, MESA_VK_DYNAMIC_MS_ALPHA_TO_ONE_ENABLE) &&
+          !BITSET_TEST(state->dynamic, MESA_VK_DYNAMIC_CB_COLOR_WRITE_ENABLES)) {
+         uint32_t fs_meta = 0;
+
+         if (state->ms->alpha_to_one_enable)
+            fs_meta |= BITFIELD_BIT(PVR_FS_META_ALPHA_TO_ONE_OFFSET);
+
+         fs_meta |= (state->ms->sample_mask &
+                     BITFIELD_MASK(PVR_FS_META_SAMPLE_MASK_LENGTH))
+                    << PVR_FS_META_SAMPLE_MASK_OFFSET;
+         fs_meta |= (state->cb->color_write_enables &
+                     BITFIELD_MASK(PVR_FS_META_COLOR_WRITE_ENABLE_LENGTH))
+                    << PVR_FS_META_COLOR_WRITE_ENABLE_OFFSET;
+
+         if (state->ms->alpha_to_coverage_enable)
+            fs_meta |= BITFIELD_BIT(PVR_FS_META_ALPHA_TO_COVERAGE_OFFSET);
+
+         data->fs.meta_is_static = true;
+         data->fs.meta_static = fs_meta;
+      }
+
       /* TODO: push consts, dynamic state, etc. */
       break;
    }

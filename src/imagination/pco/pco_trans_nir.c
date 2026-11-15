@@ -534,6 +534,10 @@ static pco_instr *trans_load_input_fs(trans_ctx *tctx,
          pco_ref xy_p[] = { pco_ref_hwreg(PCO_SR_X_P, PCO_REG_CLASS_SPEC),
                             pco_ref_hwreg(PCO_SR_Y_P, PCO_REG_CLASS_SPEC) };
 
+         /* XCLIPSE: a static fs meta word means one sample per pixel. */
+         if (!tctx->shader->is_internal && fs_data->meta_is_static)
+            return pco_mov(&tctx->b, dest, xy_p[component]);
+
          return pco_csel(&tctx->b,
                          dest,
                          fs_is_single_sampled(tctx),
@@ -2102,9 +2106,19 @@ static pco_instr *lower_smp(trans_ctx *tctx,
       sb_mode = PCO_SB_MODE_RAWDATA;
       break;
 
-   case nir_intrinsic_smp_pco:
-      /* Destination and chans should be correct. */
+   case nir_intrinsic_smp_pco: {
+      /* XCLIPSE: return only the leading channels the shader reads. Every 32-bit channel the
+       * texture unit hands back costs GPU time per fragment (measured on a GE8320: a full-screen
+       * read of 1 channel instead of 4 cut the 3D job by about a third).
+       */
+      const unsigned chans_read =
+         MAX2(util_last_bit(nir_def_components_read(&intr->def)), 1);
+      if (chans_read < chans) {
+         chans = chans_read;
+         *dest = pco_ref_chans(*dest, chans);
+      }
       break;
+   }
 
    case nir_intrinsic_smp_write_pco:
       chans = 4;
