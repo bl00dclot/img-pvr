@@ -1957,6 +1957,16 @@ pvr_dma_texture_floats(const struct pvr_transfer_cmd *transfer_cmd,
 
             tmp = ((float)(consts[i]) + (i == 1U ? offset : 0.0f)) /
                   (float)(denom[i]);
+
+            /* XCLIPSE: on the GE8320 with the DDK 1.13 kernel driver the
+             * scaled-blit sample landed at the corner of the destination
+             * pixel: a 4:1 nearest blit read texel 4x instead of 4x+2 and a
+             * linear blit was half a destination pixel off. Adding half a
+             * step moves the sample to the pixel centre. Measured: the 148
+             * failing blit_image dEQP-VK tests of the L7 baseline pass, the
+             * 34 passing ones are unchanged.
+             */
+            tmp += 0.5f * (float)(nums[i]) / (float)(denom[i]);
             mem_ptr[pvr_dynamic_const_reg_advance(sh_reg_layout, state)] =
                fui(tmp);
          }
