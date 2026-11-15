@@ -1,0 +1,18 @@
+# name  vs  fs  [pco_stats flags]     bench: = tools/vktest/bench/ (glslangValidator -V, as gen.sh), probe: = $PROBE_SHADERS (glslc -O, as the app's CMake)
+# The pipeline state is the one vkbench and the probe use: render pass, 1 RGBA8 attachment, 1 sample, no dynamic state.
+bench/alu     bench:vert.vert  bench:alu.frag
+bench/alum    bench:vert.vert  bench:alum.frag
+bench/c1      bench:vert.vert  bench:c1.frag
+bench/c2      bench:vert.vert  bench:c2.frag
+bench/disc    bench:vert.vert  bench:disc.frag
+bench/fetch   bench:vert.vert  bench:fetch.frag
+bench/fill    bench:vert.vert  bench:fill.frag
+bench/blend   bench:vert.vert  bench:fill.frag   -b
+bench/td      bench:vert.vert  bench:td.frag
+bench/tf      bench:vert.vert  bench:tf.frag
+bench/tv      bench:vert.vert  bench:tv.frag
+bench/tvm     bench:vert.vert  bench:tvm.frag
+probe/t1      probe:fs.vert    probe:t1.frag    -b
+probe/t1nb    probe:fs.vert    probe:t1.frag
+probe/t2      probe:t2.vert    probe:t2.frag
+probe/t3sep   probe:fs.vert    probe:t3sep.frag
