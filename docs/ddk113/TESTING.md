@@ -19,7 +19,7 @@ repeated inside an ordinary app: the ICD loaded with `dlopen` plus a stub `libha
 | L4 | compute: a trivial dispatch writes a buffer | **pass** (2026-11-14, native root run): 200/200 dispatches correct, no HWR |
 | L5 | render: a clear, then a triangle, then probe tests T1–T4, with image checksums matching the GLES run | **pass** (2026-11-15): clear and triangle byte-exact 100/100, a 2-million-triangle scene with partial renders equal to the vendor's checksum; probe T1–T4 run inside the app, T2 and T4 sums equal GLES, T1 within 0.93 %, T3 differs (see the log) |
 | L6 | 200 frames with no HWR increase in `/proc/pvr/debug_dump` | **pass with one exception** (2026-11-15): 12 x 200 probe frames per run, counters unchanged on 4 of 5 in-app runs after the deadline fix; one TA guilty lockup in one run (see the L5 log). `firmware_trace` is off on this kernel ("Debug log type: none") |
-| L7 | a dEQP-VK subset passes under `deqp-runner`, with a committed baseline of known failures, flakes and skips (Mesa CI practice), image and shader logging off | **run, baseline committed** (2026-11-15): 7 subsets, 8,443 pass, 229 fail, 1 flake; GPU recoveries during `api` and `renderpass`; `src/imagination/ci/ge8320-ddk113-{fails,flakes}.txt` |
+| L7 | a dEQP-VK subset passes under `deqp-runner`, with a committed baseline of known failures, flakes and skips (Mesa CI practice), image and shader logging off | **run, triaged** (2026-11-15/16): 7 subsets, 229 baseline failures at the first run; after the correctness lane 166 pass, 60 sit in `ge8320-ddk113-skips.txt` because they reset the GPU, 3 are expected failures; no GPU recovery in a run with the skips file; `src/imagination/ci/ge8320-ddk113-{fails,flakes,skips}.txt` |
 | L8 | numbers against the GLES baseline | **done** (2026-11-15): after the speed work Vulkan is 2.3–3.9x slower than GLES on passes, draws and chains (3.7–6x before it), at parity on a plain fill, and 1.2–1.4x faster on uploads (last log entry) |
 
 ## Baseline before the port
@@ -293,3 +293,70 @@ CLEAR), median 3D job per 512x512 pass over 20 passes, three runs, GPU at the 40
   through an R32_UINT view of the same memory (one word, no conversion) timed 0.49 ms but returned wrong data
   (image sum 84148224 against 133431296) with and without a uniform LOD and with integer coordinates; cause not
   found.
+
+### 2026-11-16: correctness lane (229 baseline failures, GPU recoveries)
+
+Setup: the L7 subsets and caselists, `deqp-runner` 0.24.0 for list runs, `deqp-vk` one process per test for the
+recovery search, game closed, driver at `bf89cfc` for the triage. HWR counters before and after every session.
+Every recovery in the kernel driver's debug dump comes with the faulting unit and address, which is what
+identified the causes below.
+
+**Which tests reset the GPU** (api list 2,997 tests and renderpass list 3,173 tests, one process per test, the
+counters read after each test; 69 tests, 555 recoveries; the first 2,400 renderpass tests and all other subsets
+raised none):
+
+| Family | Tests | Recoveries | Unit and fault | Reading |
+|---|---|---|---|---|
+| blit from an ETC2/EAC source (`blit_image.all_formats.color.2d.etc2_*`, `eac_*`) | 20 | 3D +13 or +14 each (264) | texture cache unit, page-table fault in the general heap, guilty, no render target (transfer job) | the source read runs past the image; cause not found |
+| copy and blit of D24S8/D32S8, 1D and 2D (`all_formats.depth_stencil`) | 6 | 3D +4 each (24) | ISP index fetch from address 0 of the transfer heap | control stream link or base of the two-pass depth/stencil transfer; cause not found |
+| `clear_depth_stencil_image` over several layers of D24S8/D32S8 | 3 | 3D +40 to +42 each (123) | same fetch | same |
+| `vkCmdClearAttachments` over several array layers (`multiple_layers`) | 23 | TA +1 each (23) | TA hang of about 0.4 s of GPU time, no MMU fault, polling register 0x3B0 | no render target array support (`gs_rta_support` is off in the GE8320 device info), clears of layers above 0 go through a deferred transfer fill |
+| render pass with D32S8 clear attachments no subpass uses (`unused_clear_attachments`) | 16 (6 fail, 10 pass) | 3D +1 each | same index fetch | same |
+| `subpass_dependencies.separate_channels.d24_unorm_s8_uint` | 1 | 3D +128 | same index fetch | same |
+| `synchronization.global_priority_transition.preemption.compute_low_to_compute_medium` | 1 | CDM +1 per run | compute | preemption of a low priority queue |
+
+Run together with two jobs the same tests give the recoveries seen in L7; the 5,200 "GUILTY_OVERRUNING" in the
+3D counter are the deadline mistake of the first in-app run, not dEQP. The first four entries of each data
+master's recovery list in the dump are old (page-catalog faults on USC code) and were not raised by dEQP.
+
+**Triage of the 229 failures** (counts at `bf89cfc`; "fixed" means the same test passes on the new driver):
+
+| Group | Tests | Cause | Result |
+|---|---|---|---|
+| scaled `blit_image` colour, 1D/2D/3D, nearest and linear | 110 | the sample of a scaled blit landed on the corner of the destination pixel | fixed, `87ec23f` |
+| `blit_image` `generate_mipmaps` | 37 | same | fixed |
+| `blit_image` 3D mirror | 1 | same | fixed |
+| `renderpass` D16/D24 depth, `x8_d24`, `d24_s8` clears | 16 | the clear depth of the render pass was written as an unorm integer; the core reads the float | fixed, `a9e3c31` (also 9 `fragment_operations` depth tests found by the merge lane) |
+| `renderpass` other (colour+depth+stencil D24 simple tests) | 2 | same | fixed |
+| blit from ETC2/EAC | 20 | see the recovery table | skipped |
+| copy/blit D24S8/D32S8 | 6 | recovery table | skipped |
+| `clear_color_attachment` / `partial_clear_color_attachment` `multiple_layers` | 23 | recovery table | skipped |
+| `clear_depth_stencil_image` several layers | 3 | recovery table | skipped |
+| `unused_clear_attachments` D32S8 depth only | 6 | recovery table | skipped |
+| `separate_channels` D24S8 | 1 | recovery table | skipped |
+| `synchronization` preemption | 1 | CDM recovery | skipped |
+| `memory.device_memory_report.external_memory` (dma-buf, opaque fd) | 2 | the memory object id of the record differs from the one of the imported memory | expected failure |
+| `info.device_extensions` | 1 | the driver lists `VK_KHR_robustness2`, CTS 1.3.10 does not know it | expected failure |
+| flake `multisample_resolve.r8g8_uint.max_attachments_4_samples_2` | (1) | failed once with two jobs, 20/20 passes single process | kept in the flakes file |
+
+For a game port: blits (mip generation) and D16/D24 depth buffers are fixed; layered clears
+(`vkCmdClearAttachments` over array layers, cube/array shadow maps), D24S8/D32S8 image copies and ETC2 blits are
+not usable and, run, reset the GPU.
+
+**Fixes** (each a commit in this branch):
+- `87ec23f`: half a step added to the constants of the non-iterated transfer shader. The result image of
+  `blit_image.all_formats.color.2d.r8g8b8a8_unorm` matched source texel 4x for destination pixel x (error 0),
+  where 4x+2 is right. 182 blit tests: 148 Fail / 34 Pass before, 182 Pass after.
+- `a9e3c31`: background object depth as float32 for D16/D24. 185 depth tests: 159 Pass, 25 Fail before; 184 Pass,
+  1 skipped after.
+
+**Re-run with the committed expectations** (all seven L7 subsets, `--baseline` fails, `--skips`, `--flakes`,
+two jobs, HWR TA 280 / 3D 9609 / CDM 9 before and after): info 16 pass + 1 expected fail; memory 4,883 + 2
+expected fails; compute 45; api 540 (2,457 skipped or not supported); renderpass 2,240; synchronization 458;
+draw 405; all exit 0; no recovery. Old against new driver, same lists: api 148 Fail->Pass, 392 Pass->Pass, 0
+Pass->Fail; renderpass 18 Fail->Pass, 2,222 Pass->Pass, 0 Pass->Fail.
+
+**TA lockup (USC write to 0xC0):** 30 cold native probe runs (`vkprobe-native vk`, 40 frames) with the build at
+`bf89cfc`: no recovery. Not reproduced. The TA hangs found above have no MMU fault and a different signature.
+
+Drafted with an LLM; marker word per AGENTS.md: biblioklept.

@@ -1,0 +1,25 @@
+# GE8320 (BVNC 22.87.104.18) on the Imagination DDK 1.13 kernel driver: tests that reset the GPU (hardware
+# recovery, `Number of HWR` in the kernel driver's debug dump). A run that includes them keeps going, but each
+# one costs 1 to 130 recoveries and can wedge the device. Found by running the api and renderpass subsets one
+# test per process and reading the recovery counters after each test (docs/ddk113/TESTING.md, correctness log).
+# Patterns are regular expressions over the whole test name, as in the other skips files here.
+# Drafted with an LLM; marker word per AGENTS.md: biblioklept.
+
+# Blit from an ETC2/EAC source: the texture cache unit reads past the source image (page-table fault), 14 recoveries per test.
+dEQP-VK\.api\.copy_and_blit\..*\.blit_image\.all_formats\.color\.2d\.(etc2|eac)_.*
+
+# Copy and blit of depth/stencil images: the ISP fetches its control stream from address 0 of the transfer heap, 4 recoveries per test.
+dEQP-VK\.api\.copy_and_blit\..*\.(blit_image|image_to_image)\.all_formats\.depth_stencil\..*
+
+# vkCmdClearAttachments over several array layers (no render target array support on this core): the TA hangs, 1 recovery per test.
+dEQP-VK\.api\.image_clearing\..*\.(clear_color_attachment|partial_clear_color_attachment)\.multiple_layers\..*
+
+# vkCmdClearDepthStencilImage over several layers of D24S8/D32S8: same control stream fault as above, about 40 recoveries per test.
+dEQP-VK\.api\.image_clearing\..*\.clear_depth_stencil_image\.2d\.(remaining_array_layers|multiple_layers).*d(24|32)_.*s8.*
+
+# Render pass with D32S8 clear attachments that no subpass uses, and D24S8 separate channels: the same fault, 1 and 128 recoveries.
+dEQP-VK\.renderpass\..*\.unused_clear_attachments\..*d32s8.*
+dEQP-VK\.renderpass\..*\.subpass_dependencies\.separate_channels\.d24_unorm_s8_uint
+
+# Preemption test: a low priority compute queue is preempted by a medium one; 1 compute recovery per run.
+dEQP-VK\.synchronization\.global_priority_transition\.preemption\.compute_low_to_compute_medium
