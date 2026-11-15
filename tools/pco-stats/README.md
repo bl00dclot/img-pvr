@@ -69,7 +69,8 @@ changed. Results for the corpus are in the lane report of the commit that added 
 
 ## Reference results
 
-`results/bf89cfc.txt` and `results/d1913f6.txt` are the corpus stats of those two commits (host tool built from each);
+`results/device-bf89cfc.txt` is the same corpus as the device reports it (vkbench modes and the probe's t1, t2, t3sep
+under `PCO_DEBUG_PRINT=vs,fs,stats`, converted with `phone2stats.py`); `results/bf89cfc.txt` and `results/d1913f6.txt` are the corpus stats of those two commits (host tool built from each);
 `compare.py results/d1913f6.txt results/bf89cfc.txt` is the before/after of the three S0 compiler fixes. Static
 counts do not see loop trip counts: the ALU shader's loop is unrolled by the second fix, so its static instruction
 groups go from 43 to 203 while the executed ones fall.
