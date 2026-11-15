@@ -1127,12 +1127,15 @@ static void pvr_frag_state_stream_init(struct pvr_render_ctx *ctx,
          value.value = fui(depth_clear);
          break;
 
+      /* XCLIPSE: on the GE8320 the background object depth is a float32 for
+       * every depth format. With the unorm encoding the register's own
+       * description asks for, a clear to a small depth (1/255) stored 0 in
+       * D16 and D24 attachments. Measured on dEQP-VK: 16 of the 17 failing
+       * renderpass D16/D24 tests pass, 159 passing ones are unchanged.
+       */
       case ROGUE_CR_ZLS_FORMAT_TYPE_16BITINT:
-         value.value = _mesa_float_to_unorm(depth_clear, 16);
-         break;
-
       case ROGUE_CR_ZLS_FORMAT_TYPE_24BITINT:
-         value.value = _mesa_float_to_unorm(depth_clear, 24);
+         value.value = fui(depth_clear);
          break;
 
       default:
