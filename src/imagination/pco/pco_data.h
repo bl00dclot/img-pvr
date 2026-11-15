@@ -103,6 +103,11 @@ typedef struct _pco_fs_data {
    bool meta_is_static;
    uint32_t meta_static;
 
+   /* XCLIPSE: internal shader that never runs per sample (the attachment load of a single-sampled
+    * attachment): fragment x/y come from the pixel registers without the per-fragment test of the
+    * coverage mask. */
+   bool single_sampled;
+
    gl_frag_result z_replicate;
 
    /* Blend options. */

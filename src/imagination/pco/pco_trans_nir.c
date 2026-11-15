@@ -535,7 +535,8 @@ static pco_instr *trans_load_input_fs(trans_ctx *tctx,
                             pco_ref_hwreg(PCO_SR_Y_P, PCO_REG_CLASS_SPEC) };
 
          /* XCLIPSE: a static fs meta word means one sample per pixel. */
-         if (!tctx->shader->is_internal && fs_data->meta_is_static)
+         if (fs_data->single_sampled ||
+             (!tctx->shader->is_internal && fs_data->meta_is_static))
             return pco_mov(&tctx->b, dest, xy_p[component]);
 
          return pco_csel(&tctx->b,

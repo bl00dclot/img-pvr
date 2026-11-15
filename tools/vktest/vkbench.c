@@ -13,6 +13,7 @@
 //   disc   tv with discard on alpha            alu    64 dependent fract/fma steps, highp
 //   alum   the same in mediump                 tvm    tv into a mediump result
 //   blend  fill blended (alpha 0.5) over the previous contents, loaded at the start of the pass
+//   load   fill, no blending, previous contents loaded   blendc  blend over a cleared target
 // Prints the byte sum of the last iteration's image; it only has to be non-zero and repeatable.
 //
 // Build (armv7): $NDK/.../armv7a-linux-androideabi29-clang -O2 -Wall -Wextra -Werror
@@ -161,8 +162,11 @@ int main(int argc, char **argv)
    const char *mode = argv[2];
    const int iterations = argc > 3 ? atoi(argv[3]) : 10;
    const int f16tex = argc > 4 && !strcmp(argv[4], "rgba16f");
-   const int blend = !strcmp(mode, "blend");
-   const char *frag_name = blend ? "fill" : mode;
+   /* blend: blending over a loaded target. load: the load without blending. blendc: blending over a cleared
+    * target. Together they split the cost of the blend mode into its two parts. */
+   const int blend = !strcmp(mode, "blend") || !strcmp(mode, "blendc");
+   const int load = !strcmp(mode, "blend") || !strcmp(mode, "load");
+   const char *frag_name = (blend || load) ? "fill" : mode;
    int frag = -1;
    for (unsigned i = 0; i < sizeof(frags) / sizeof(frags[0]); i++)
       if (!strcmp(frags[i].name, frag_name))
@@ -314,7 +318,7 @@ int main(int argc, char **argv)
    submit_wait();
 
    VkAttachmentDescription ad = { .format = VK_FORMAT_R8G8B8A8_UNORM, .samples = VK_SAMPLE_COUNT_1_BIT,
-                                  .loadOp = blend ? VK_ATTACHMENT_LOAD_OP_LOAD : VK_ATTACHMENT_LOAD_OP_CLEAR,
+                                  .loadOp = load ? VK_ATTACHMENT_LOAD_OP_LOAD : VK_ATTACHMENT_LOAD_OP_CLEAR,
                                   .storeOp = VK_ATTACHMENT_STORE_OP_STORE,
                                   .stencilLoadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE,
                                   .stencilStoreOp = VK_ATTACHMENT_STORE_OP_DONT_CARE,

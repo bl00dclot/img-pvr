@@ -1199,6 +1199,10 @@ pco_shader *pvr_uscgen_loadop(pco_ctx *ctx, struct pvr_load_op *load_op)
                         load_op->clears_loads_state.rt_load_mask;
 
       b.shader->info.fs.uses_sample_shading = msaa;
+      /* XCLIPSE: the load program ran the coverage-mask test for the x and y it hands the texture
+       * unit twice (12 of its 16 instruction groups). Without it a 512x512 blend over a loaded
+       * target went from 0.823 to 0.582 ms of 3D time on a GE8320 (vkbench blend, same pixels). */
+      data.fs.single_sampled = !msaa;
 
       shared_regs = ALIGN_POT(shared_regs, 4);
 
