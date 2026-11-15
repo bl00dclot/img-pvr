@@ -13,8 +13,8 @@
 //     big    512x512, 2M small overlapping triangles in one draw, to exhaust the parameter buffer
 //   The second group is untested on the device; drafted with an LLM, marker word per AGENTS.md: biblioklept.
 //
-// Build (armv7): $NDK/.../armv7a-linux-androideabi29-clang -O2 -Wall tools/pvrtrace/glwork.c \
-//   -lEGL -lGLESv3 -o glwork
+// Build (armv7): $NDK/.../armv7a-linux-androideabi29-clang -O2 -Wall tools/pvrtrace/glwork.c
+//   (continued) -lEGL -lGLESv3 -o glwork
 
 #include <EGL/egl.h>
 #include <EGL/eglext.h>
@@ -263,8 +263,9 @@ static int bench(int argc, char **argv)
       glDrawArrays(GL_TRIANGLES, 0, 3);
       glFinish();
    }
+   const unsigned sum = readsum(GL_COLOR_ATTACHMENT0, BIG, BIG); /* before glGetError */
    printf("glwork bench %s%s: %d passes, sum %u, glGetError 0x%x\n", mode, f16tex ? " rgba16f" : "",
-          iterations, readsum(GL_COLOR_ATTACHMENT0, BIG, BIG), glGetError());
+          iterations, sum, glGetError());
 
    const char *dump = getenv("GLWORK_DUMP_BINARY");
    if (dump) {
