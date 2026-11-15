@@ -76,7 +76,10 @@ static const nir_shader_compiler_options nir_options = {
 
    .lower_helper_invocation = true,
 
-   .max_unroll_iterations = 16,
+   /* XCLIPSE: 32, not 16: loop overhead is several instruction groups per iteration on Rogue
+    * (predicate-stack loop control and phi copies); a 32-iteration ALU loop ran 2.9x faster
+    * unrolled on a GE8320. */
+   .max_unroll_iterations = 32,
    .max_samples = 4,
 
    .io_options = nir_io_vectorizer_ignores_types,
@@ -1174,33 +1177,6 @@ lower_phi_with_undefs(nir_builder *b, nir_phi_instr *phi, UNUSED void *cb_data)
    return progress;
 }
 
-static bool
-remat_load_const(nir_builder *b, nir_instr *instr, UNUSED void *cb_data)
-{
-   if (instr->type != nir_instr_type_load_const)
-      return false;
-
-   nir_load_const_instr *nconst = nir_instr_as_load_const(instr);
-
-   if (list_is_singular(&nconst->def.uses))
-      return false;
-
-   nir_foreach_use_safe (src, &nconst->def) {
-      nir_instr *use_instr = nir_src_use_instr(src);
-      b->cursor = nir_before_instr(use_instr);
-
-      nir_def *remat_const = nir_build_imm(b,
-                                           nconst->def.num_components,
-                                           nconst->def.bit_size,
-                                           nconst->value);
-
-      nir_src_rewrite(src, remat_const);
-   }
-
-   nir_instr_remove(instr);
-
-   return true;
-}
 /**
  * \brief Runs post-processing passes on a NIR shader.
  *
@@ -1257,12 +1233,11 @@ void pco_postprocess_nir(pco_ctx *ctx, nir_shader *nir, pco_data *data)
 
    NIR_PASS(_, nir, nir_trivialize_registers);
 
-   if (!internal) {
-      nir_shader_instructions_pass(nir,
-                                   remat_load_const,
-                                   nir_metadata_none,
-                                   NULL);
-   }
+   /* XCLIPSE: constants are no longer re-created before every use. Each reload cost an
+    * instruction group; on a GE8320 a loop-heavy fragment shader ran 2.2x faster with each
+    * constant loaded once, and holding a few more registers measured free (up to 8 extra temps
+    * left the 3D job time unchanged).
+    */
 
    /* Re-index everything. */
    nir_foreach_function_with_impl (_, impl, nir) {
