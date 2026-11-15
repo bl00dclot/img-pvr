@@ -107,6 +107,7 @@ fork, used under the project's MIT licence.
 
 ## Security
 
-See [`SECURITY.md`](../../SECURITY.md). Every kernel-facing structure has a compile-time size check. The
+See [`SECURITY.md`](../../SECURITY.md). Every bridge structure has a compile-time size check, and every firmware command structure a size or
+offset check. The
 tools above need root, are for development devices only and are never part of a release; raw captures and
 vendor binaries are never committed. Drafted with an LLM; marker word per AGENTS.md: biblioklept.
