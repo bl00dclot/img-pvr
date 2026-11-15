@@ -14,13 +14,13 @@ repeated inside an ordinary app: the ICD loaded with `dlopen` plus a stub `libha
 |---|---|---|
 | L0 | `vkEnumeratePhysicalDevices` returns 1 device | **pass** (2026-11-14) |
 | L1 | `vkCreateDevice` succeeds | **pass** (2026-11-14), render, compute and transfer contexts created |
-| L2 | memory can be allocated, mapped and freed, and the heaps look sane | **allocation passes**; map/free not yet checked on their own |
-| L3 | transfer queue: clear and copy work, and the readback checksum matches | **pass for fill, copy and clear + readback** (2026-11-14, native root run): byte-exact, 50/50 runs, no HWR; image-to-image blits and copies not yet run |
+| L2 | memory can be allocated, mapped and freed, and the heaps look sane | **pass**: allocation in the first run (2026-11-14); mapping, flushing and freeing by dEQP-VK `memory.*` (4,883 passes, L7) |
+| L3 | transfer queue: clear and copy work, and the readback checksum matches | **pass for fill, copy and clear + readback** (2026-11-14, native root run): byte-exact, 50/50 runs, no HWR; image-to-image blits and copies run only under dEQP-VK `api.copy_and_blit` (L7: 174 failures there, mostly filtering precision) |
 | L4 | compute: a trivial dispatch writes a buffer | **pass** (2026-11-14, native root run): 200/200 dispatches correct, no HWR |
 | L5 | render: a clear, then a triangle, then probe tests T1–T4, with image checksums matching the GLES run | **pass** (2026-11-15): clear and triangle byte-exact 100/100, a 2-million-triangle scene with partial renders equal to the vendor's checksum; probe T1–T4 run inside the app, T2 and T4 sums equal GLES, T1 within 0.93 %, T3 differs (see the log) |
 | L6 | 200 frames with no HWR increase in `/proc/pvr/debug_dump` | **pass with one exception** (2026-11-15): 12 x 200 probe frames per run, counters unchanged on 4 of 5 in-app runs after the deadline fix; one TA guilty lockup in one run (see the L5 log). `firmware_trace` is off on this kernel ("Debug log type: none") |
 | L7 | a dEQP-VK subset passes under `deqp-runner`, with a committed baseline of known failures, flakes and skips (Mesa CI practice), image and shader logging off | **run, baseline committed** (2026-11-15): 7 subsets, 8,443 pass, 229 fail, 1 flake; GPU recoveries during `api` and `renderpass`; `src/imagination/ci/ge8320-ddk113-{fails,flakes}.txt` |
-| L8 | numbers against the GLES baseline | **done** (2026-11-15): Vulkan 3.7–6x slower than GLES on passes, draws and chains, 1.4x (final run) to 1.6x (first run) faster on uploads (L5 log table, final run below) |
+| L8 | numbers against the GLES baseline | **done** (2026-11-15): after the speed work Vulkan is 2.3–3.9x slower than GLES on passes, draws and chains (3.7–6x before it), at parity on a plain fill, and 1.2–1.4x faster on uploads (last log entry) |
 
 ## Baseline before the port
 
@@ -82,7 +82,8 @@ transfer and render gates stay in place.
   errors.
 - **Trace:** under pvrtrace the run made 170 bridge calls (0 dropped), 3 of them `KICKCDM2`, all `eError=0`.
 
-Not yet done for L4: the run inside the app sandbox, and the `firmware_trace` tail.
+Not done at the time for L4: the run inside the app sandbox, and the `firmware_trace` tail. Later: the in-app
+compute check passes (L5 entry); `firmware_trace` is disabled on this kernel.
 
 ### 2026-11-14: transfer (L3)
 
@@ -99,7 +100,8 @@ word is checked on the host.
 - **After:** the HWR line is identical and the FW state is `OK`. No Mesa errors in logcat.
 - **Trace:** 4 `SUBMITTRANSFER2` per `all` run, all `eError=0`, compared with the vendor in `CAPTURE.md`.
 
-Not yet done for L3: the run inside the app sandbox, the `firmware_trace` tail, and blits between images
+Not done at the time for L3 (later: the in-app probe uses transfers for every clear and readback, L5 entry;
+blits ran under dEQP-VK, L7): the run inside the app sandbox, the `firmware_trace` tail, and blits between images
 (`vkCmdBlitImage`, `vkCmdCopyImage`).
 
 ### 2026-11-15: `pvrtrace` edit mode (W6)
@@ -118,15 +120,9 @@ over the vendor GLES driver running `glwork draw`, with the game closed.
   past-end one; checksum `2613248`; the three `KICKTA3D2` records decode as `[EDITED] [EDIT REFUSED]`.
 - **HWR:** `TA(164/164+0), 3D(101/101+0), CDM(0/0+0)` before and after; `RGX FW State: OK`.
 
-Not yet done: an edit that changes a value (that is the W5 TA/3D decode work). Drafted with an LLM; marker
+Not done at the time: an edit that changes a value. Later: used on Mesa's own kicks to test the
+pixel-merge flag (speed work entry). Drafted with an LLM; marker
 word per AGENTS.md: biblioklept.
-
-### Render tools for L5 (W5a, not yet run)
-
-`tools/vktest/vkdraw` (render-pass clear, then a full-screen triangle; expected byte sum 2613248, the same as
-`glwork draw`) and the `glwork` modes `depth`, `msaa`, `mrt` and `big` (for TA/3D captures, `big` forcing a
-partial render) are built for armv7 but have not been run on the device. Drafted with an LLM; marker word per
-AGENTS.md: biblioklept.
 
 ### 2026-11-15: render (L5), partial renders, in-app probe
 

@@ -123,3 +123,6 @@ One entry per change, newest last. Every entry names its evidence. Every commit 
   Probe passes and chains are 1.4–2.2x faster than before and still 2.3–3.9x slower than the vendor GLES
   driver; plain fills are at parity; dEQP-VK subsets show no new failure (`TESTING.md`, speed work).
   Drafted with an LLM; marker word per AGENTS.md: biblioklept.
+- **docs:** README brought up to date (status, building, loading, tools, what is next for speed); stale
+  "not yet" notes in `TESTING.md` and `CAPTURE.md` replaced with what happened since. Drafted with an LLM;
+  marker word per AGENTS.md: biblioklept.

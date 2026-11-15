@@ -4,7 +4,19 @@ This fork ports img-pvr (Mesa's Imagination PowerVR Vulkan driver, on Mesa 27.0.
 kernel interface to **DDK 1.13ED5776728**. The target is the Redmi A2. Other MT6765 phones whose kernel driver is DDK 1.13@5776728 may work too, but
 only the A2 is being tested.
 
-**Status: work in progress, renders.** On the Redmi A2 the driver enumerates the GPU, creates a Vulkan 1.3 device, and runs transfers, compute dispatches and render passes, including partial renders. Test images equal the vendor GLES driver's on the native tests and on probe tests T2 and T4; T1 is within 1 % and T3 differs (whole-image sum; at the centre only green). GPU recovery counters stayed unchanged in the native runs and in four of five in-app probe runs (one TA lockup, unexplained), and rose during the dEQP-VK `api` and `renderpass` subsets (`TESTING.md` L0–L7). All four DDK 1.13 command layouts are decoded (`CAPTURE.md`). Inside an ordinary app it runs the probe tests, but slower than the vendor's GLES driver except for uploads (`TESTING.md`, L5 table). A dEQP-VK subset is recorded in `TESTING.md` (L7). Drafted with an LLM; marker word per AGENTS.md: biblioklept.
+**Status: work in progress; renders correctly, slower than the vendor driver.** On the Redmi A2 the
+driver enumerates the GPU, creates a Vulkan 1.3 device and runs transfers, compute dispatches and render
+passes, including partial renders (`TESTING.md` L0–L7). All four DDK 1.13 command layouts are decoded
+(`CAPTURE.md`).
+
+- **Correctness:** test images equal the vendor GLES driver's on the native tests and on probe tests T2
+  and T4; T1 is within 1 % and T3 differs (whole-image sum; at the centre only green). A dEQP-VK subset
+  gives 8,443 passes and 229 known failures, kept as a baseline in `src/imagination/ci/`.
+- **Stability:** GPU recovery counters stayed unchanged in the native runs and in four of five in-app
+  probe runs (one TA lockup, unexplained), and rose during the dEQP-VK `api` and `renderpass` subsets.
+- **Speed:** after the speed work (`TESTING.md`, last entry) a plain full-screen pass costs the GPU what
+  it costs the vendor driver; passes with texture reads, blending or discard are 2.3–3.9x slower; uploads
+  are 1.2–1.4x faster. "Next for speed" below lists what remains.
 
 ## Target
 
@@ -39,8 +51,51 @@ Details and citations are in [`ABI.md`](ABI.md).
 
 ## Building
 
-Not yet: Phase 1 adds a reproducible Docker build with the meson option `-Dpvr-ddk=1.13`. The existing
-`build.sh` still builds the DDK 1.11 driver unchanged.
+```
+DDK=1.13 ARCHES=armv7 scripts/docker-build.sh <android-ndk-r27c-dir>
+```
+
+builds in the digest-pinned image of `docker/Dockerfile` (the NDK is mounted read-only) and leaves
+`dist/img-pvr-<version>-<commit>-armv7-ddk113.zip` (`meta.json`, `libvulkan_powervr.so`, `NOTICE.txt`).
+`DDK=1.11` (the default) builds the original driver; the meson option is `-Dimagination-srv-ddk=1.11|1.13`.
+A pushed `ddk113-v*` tag builds the same zip in GitHub Actions and publishes it as a prerelease with its
+SHA-256 and a build-provenance attestation (`.github/workflows/ddk113-release.yml`). The only release so
+far, `ddk113-v0.1.0`, is from before the speed work.
+
+## Loading
+
+The phone has no Vulkan HAL for this driver, so a program loads the ICD itself: `dlopen` the `.so`, call
+`vk_icdNegotiateLoaderICDInterfaceVersion`, then use `vk_icdGetInstanceProcAddr`. `tools/vktest/*.c` do
+exactly that; `tools/vktest/vkshim.c` wraps it as a `vkGetInstanceProcAddr` library for programs that
+expect a loader (dEQP-VK). Inside an app the ICD also needs a `libhardware.so` next to it.
+
+## Tools (development only, never in a release)
+
+| Path | What it is for |
+|---|---|
+| `tools/gen_bridge.py`, `tools/check_memflags.sh` | generate the 1.13 bridge header from kernel headers; check memory-flag values against both DDKs |
+| `tools/pvrtrace/` | root ptrace tracer of the bridge ioctls with the kick command blobs and context state, an edit mode (`-e`), `decode.py`, and `glwork` (GLES scenes for the vendor driver) |
+| `tools/vktest/` | loader-less Vulkan tests: `vkcompute`, `vktransfer`, `vkdraw` (clear, draw, big, fill), `vkshim` |
+| `tools/gputrace/` | GPU job times from the kernel driver's ftrace events: `gputrace.sh` on the phone, `gpujobs.py` on the host |
+
+## Next for speed
+
+Measured causes are in `TESTING.md` ("speed work"). In order of expected gain:
+
+1. **Half-float texture results for relaxed-precision shaders.** Each 32-bit channel a texture read returns
+   costs GPU time per fragment. Imagination's precision guide says Rogue stores `lowp` and `mediump` as
+   16-bit floats and that samplers default to `lowp`, which is how the vendor GLES driver's reads stay
+   cheap. Mesa has the pieces (`nir_lower_mediump_*`, `nir_opt_16bit_tex_image`) and the sampler
+   instruction has an `f16` mode that this compiler does not use yet; an application must then mark its
+   shaders `mediump` (SPIR-V `RelaxedPrecision`). Not implemented, gain not measured.
+2. **The attachment load shader and float blending** (probe T1): a leaner load program for known formats.
+3. **Discard shaders** (probe T2): the punch-through path, and the pixel-merge render flag Mesa always
+   disables (clearing it gained 16 % on T2; its safety conditions are not known).
+4. **The kernel kick:** about 15 % of the CPU time per render.
+
+Application side, from Imagination's render-pass guidance: few render passes, `CLEAR`/`DONT_CARE` load
+ops and `DONT_CARE` store ops wherever contents are not needed, subpasses and transient attachments to
+keep data on-chip.
 
 ## Authorship and upstream policy
 
@@ -52,6 +107,6 @@ fork, used under the project's MIT licence.
 
 ## Security
 
-See [`SECURITY.md`](../../SECURITY.md). Planned: compile-time size checks on every kernel-facing structure. Planned: capture tooling under
-`tools/` (it does not exist yet), which will need root, is meant for development only, and will never be
-part of a release.
+See [`SECURITY.md`](../../SECURITY.md). Every kernel-facing structure has a compile-time size check. The
+tools above need root, are for development devices only and are never part of a release; raw captures and
+vendor binaries are never committed. Drafted with an LLM; marker word per AGENTS.md: biblioklept.

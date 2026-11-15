@@ -10,7 +10,7 @@ Tested on the PowerVR GE8320 (Redmi 9C, MediaTek Helio G35), BVNC 22.87.104.18, 
 1.11.5425693.
 
 > **This fork:** the `ddk113` branch ports this driver to the DDK 1.13ED5776728 kernel driver, targeting
-> the Redmi A2. It is untested work in progress, written with an AI assistant. Everything below this note
+> the Redmi A2. It is work in progress, tested on one Redmi A2 only, written with an AI assistant. Everything below this note
 > describes the original DDK 1.11 release on the Redmi 9C, not the `ddk113` branch.
 > See [`docs/ddk113/`](docs/ddk113/README.md).
 
@@ -73,8 +73,8 @@ Android launchers with custom driver support import.
 ## Disclaimer
 
 This project was developed with heavy use of AI tools. Every change in the DDK 1.11 release was built and
-tested on the device above before it was published. The `ddk113` branch of this fork is untested work in
-progress; [`docs/ddk113/TESTING.md`](docs/ddk113/TESTING.md) shows what has run.
+tested on the device above before it was published. The `ddk113` branch of this fork is work in progress,
+tested on one Redmi A2 only; [`docs/ddk113/TESTING.md`](docs/ddk113/TESTING.md) shows what has run and what has not.
 
 ## License
 

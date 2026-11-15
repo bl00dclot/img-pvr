@@ -152,10 +152,12 @@ FIRSTKICK, LASTKICK and the bit 20 seen on 1.11. The tail from `0x3c` holds a fi
 (`0xc02000xx`) and a small value that change per kick, which looks like the partial-render fence UFO at
 `0x44`. The words at `0x3c` and `0x40` are still unidentified. Confirmed by L5 (field table below).
 
-## Evidence 4: static disassembly (pending)
+## Evidence 4: static disassembly (not done, not needed)
 
-`llvm-objdump -d` of the vendor GLES and services libraries (ARM32), at the sites that fill the command blobs.
-This is done locally for interoperability, and only the resulting field offsets are recorded.
+The plan allowed for `llvm-objdump -d` of the vendor GLES and services libraries at the sites that fill the
+command blobs. The captures, the feature-condition rule and the passing runs settled every field the port
+fills, so no disassembly was done. The words still unidentified (zero in every capture) are marked in the
+field tables.
 
 ## Field tables
 
