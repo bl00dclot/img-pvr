@@ -2237,8 +2237,13 @@ static VkResult pvr_sub_cmd_gfx_job_init(const struct pvr_device_info *dev_info,
       job->run_frag = true;
    }
 
-   /* TODO: Enable pixel merging when it's safe to do. */
-   job->disable_pixel_merging = true;
+   /* XCLIPSE: pixel merging stays on, as the vendor GLES driver leaves it (its 3D kicks never set
+    * DISABLE_PIXELMERGE: captured fill, blend, discard, sampling, depth, MSAA and MRT scenes). On a
+    * GE8320 it made vkprobe T2 3.9 % faster for individual draws and 8.5 % for instanced draws, with
+    * identical images; dEQP glsl.discard, glsl.derivate, fragment_operations, rasterization 1/10,
+    * renderpass 1/5 and draw 1/10 gave the same result per test with merging on and off.
+    */
+   job->disable_pixel_merging = false;
 
    return VK_SUCCESS;
 }
@@ -2667,7 +2672,7 @@ pvr_sub_cmd_gfx_geom_only_job_init(struct pvr_cmd_buffer *cmd_buffer,
    job->max_tiles_in_flight = 0U;
    job->frag_uses_atomic_ops = sub_cmd->frag_uses_atomic_ops;
    job->disable_compute_overlap = false;
-   job->disable_pixel_merging = true;
+   job->disable_pixel_merging = false; /* XCLIPSE: see pvr_sub_cmd_gfx_job_init */
    job->max_shared_registers = cmd_buffer->state.max_shared_regs;
 
    job->geometry_terminate = false;
