@@ -47,6 +47,7 @@ static const struct debug_named_value pco_debug_options[] = {
    { "no_coissue", PCO_DEBUG_NO_COISSUE, "XCLIPSE: do not pair independent main-ALU ops in one group (A/B)." },
    { "no_fwdfix", PCO_DEBUG_NO_FWDFIX, "XCLIPSE: one forward-propagation round only, as before (A/B)." },
    { "no_imadd_addr", PCO_DEBUG_NO_IMADD_ADDR, "XCLIPSE: buffer read address as add64_32 (not one imadd64)." },
+   { "no_vreg_coalesce", PCO_DEBUG_NO_VREG_COALESCE, "XCLIPSE: keep the copy into a phi register after its producer." },
    DEBUG_NAMED_VALUE_END,
 };
 

@@ -874,3 +874,86 @@ bool pco_opt_comp_only_vecs(pco_shader *shader)
 
    return progress;
 }
+
+/**
+ * \brief XCLIPSE: writes the producer's result straight into the virtual register a plain copy stores it to.
+ *
+ * nir_convert_from_ssa turns every phi into virtual registers written by a copy at the end of each predecessor
+ * (`mbyp vreg, %ssa`); 91 of 543 groups of the game's lean fragment shader are lone copies. When %ssa is read
+ * by that copy only, is made in the same block, and nothing between the two reads or writes the virtual register
+ * (nor differs in execution condition), the producer can write the register itself and the copy goes.
+ *
+ * \param[in,out] shader PCO shader.
+ * \return True if the pass made progress.
+ */
+bool pco_opt_coalesce_vreg_stores(pco_shader *shader)
+{
+   bool progress = false;
+
+   if (PCO_DEBUG(NO_VREG_COALESCE))
+      return false;
+
+   pco_foreach_func_in_shader (func, shader) {
+      unsigned *uses = rzalloc_array_size(NULL, sizeof(*uses), func->next_ssa);
+      pco_instr **def = rzalloc_array_size(uses, sizeof(*def), func->next_ssa);
+
+      pco_foreach_instr_in_func (instr, func) {
+         pco_foreach_instr_src_ssa (psrc, instr)
+            uses[psrc->val]++;
+
+         pco_foreach_instr_dest (pdest, instr) {
+            if (pco_ref_is_ssa(*pdest))
+               def[pdest->val] = instr;
+         }
+      }
+
+      pco_foreach_block_in_func (block, func) {
+         pco_foreach_instr_in_block_safe (mov, block) {
+            if (mov->op != PCO_OP_MBYP || mov->num_dests != 1 || !pco_ref_is_vreg(mov->dest[0]) ||
+                !pco_ref_is_ssa(mov->src[0]) || pco_ref_has_mods_set(mov->src[0]) ||
+                pco_ref_has_mods_set(mov->dest[0]) ||
+                (pco_instr_has_olchk(mov) && pco_instr_get_olchk(mov)) ||
+                pco_instr_get_exec_cnd(mov) != PCO_EXEC_CND_E1_ZX)
+               continue;
+
+            pco_ref vreg = mov->dest[0];
+            pco_ref src = mov->src[0];
+            pco_instr *prod = def[src.val];
+            if (uses[src.val] != 1 || !prod || prod->parent_block != block || prod->num_dests != 1 ||
+                prod->dest[0].val != src.val || pco_ref_get_chans(src) != 1 ||
+                pco_ref_get_bits(src) != pco_ref_get_bits(vreg) || pco_ref_has_mods_set(prod->dest[0]))
+               continue;
+
+            /* Only real hardware ops with the default execution condition (the destination is then just a
+             * temp), not pseudo ops, vec/comp plumbing or atomics. */
+            if (pco_op_info[prod->op].type == PCO_OP_TYPE_PSEUDO || !pco_instr_has_exec_cnd(prod) ||
+                pco_instr_get_exec_cnd(prod) != PCO_EXEC_CND_E1_ZX)
+               continue;
+
+            if (pco_instr_has_atom(prod) && pco_instr_get_atom(prod))
+               continue;
+
+            /* Nothing between the producer and the copy may touch the register. */
+            bool touched = false;
+            for (pco_instr *i = pco_next_instr(prod); i && i != mov; i = pco_next_instr(i)) {
+               pco_foreach_instr_src_vreg (ps, i)
+                  touched |= ps->val == vreg.val;
+               pco_foreach_instr_dest_vreg (pd, i)
+                  touched |= pd->val == vreg.val;
+               if (touched)
+                  break;
+            }
+            if (touched)
+               continue;
+
+            prod->dest[0] = vreg;
+            pco_instr_delete(mov);
+            progress = true;
+         }
+      }
+
+      ralloc_free(uses);
+   }
+
+   return progress;
+}
