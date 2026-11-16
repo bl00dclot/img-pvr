@@ -861,7 +861,8 @@ static VkResult pvr_setup_texture_state_words(
    struct pvr_device *device,
    struct pvr_combined_image_sampler_descriptor *descriptor,
    const struct pvr_image_view *image_view,
-   uint32_t view_index)
+   uint32_t view_index,
+   bool raw_word)
 {
    const struct pvr_image *image = vk_to_pvr_image(image_view->vk.image);
    const struct pvr_image_plane *plane = pvr_single_plane_const(image);
@@ -883,6 +884,29 @@ static VkResult pvr_setup_texture_state_words(
       word1.texaddr =
          PVR_DEV_ADDR_OFFSET(word1.texaddr,
                              plane->layer_size * view_index);
+   }
+
+   if (raw_word) {
+      /* XCLIPSE: read the 32-bit texels as one R32_UINT channel (see
+       * pvr_uscgen_loadop_is_raw()). */
+      const struct ROGUE_TEXSTATE_IMAGE_WORD0 image_word0 = pvr_csb_unpack(
+         &descriptor->image.words[0],
+         TEXSTATE_IMAGE_WORD0);
+
+      pvr_csb_pack (&descriptor->image.words[0],
+                    TEXSTATE_IMAGE_WORD0,
+                    word0) {
+         word0 = image_word0;
+         /* XCLIPSE: texformat and texformat_compressed are the same bits; the unpacked struct
+          * holds the old value in both and the pack ORs them, so the RGBA8 format code would
+          * be ORed into the new one (U8U8U8U8 | U32 = F16F16F16F16, which read zeros). */
+         word0.texformat_compressed = 0;
+         word0.texformat = pvr_arch_get_tex_format(VK_FORMAT_R32_UINT);
+         word0.swiz0 = ROGUE_TEXSTATE_SWIZ_SRCCHAN_0;
+         word0.swiz1 = ROGUE_TEXSTATE_SWIZ_SRC_ZERO;
+         word0.swiz2 = ROGUE_TEXSTATE_SWIZ_SRC_ZERO;
+         word0.swiz3 = ROGUE_TEXSTATE_SWIZ_SRC_ONE;
+      }
    }
 
    if (image_view->vk.view_type == VK_IMAGE_VIEW_TYPE_2D &&
@@ -957,7 +981,8 @@ pvr_load_op_constants_create_and_upload(struct pvr_cmd_buffer *cmd_buffer,
          result = pvr_setup_texture_state_words(cmd_buffer->device,
                                                 &texture_states[texture_count],
                                                 image_view,
-                                                view_index);
+                                                view_index,
+                                                pvr_uscgen_loadop_is_raw(load_op, i));
          if (result != VK_SUCCESS)
             return result;
 
@@ -1019,7 +1044,8 @@ pvr_load_op_constants_create_and_upload(struct pvr_cmd_buffer *cmd_buffer,
       result = pvr_setup_texture_state_words(cmd_buffer->device,
                                              &texture_states[texture_count],
                                              image_view,
-                                             view_index);
+                                             view_index,
+                                             false);
       if (result != VK_SUCCESS)
          return result;
 

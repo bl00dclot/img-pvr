@@ -1021,6 +1021,26 @@ static inline VkFormat pvr_uscgen_format_for_accum(VkFormat vk_format)
    UNREACHABLE("");
 }
 
+/* XCLIPSE: an RGBA8 UNORM attachment is loaded as one raw 32-bit word. Its tile format is the
+ * packed 8888 word, which is also the memory layout, so the load reads the texels through an
+ * R32_UINT view (see pvr_setup_texture_state_words()) and stores the word as it is. That drops the
+ * float conversion in the texture unit and the pack in the shader. Correct on a GE8320: vkbench
+ * blend sum 133431296 (as with the converting read) and probe sums unchanged. Not used for MSAA,
+ * 2D views of 3D images or other formats, which keep the converting read. */
+bool pvr_uscgen_loadop_is_raw(const struct pvr_load_op *load_op,
+                              unsigned rt_idx)
+{
+   const __typeof__(load_op->clears_loads_state) *state =
+      &load_op->clears_loads_state;
+   const unsigned bit = BITFIELD_BIT(rt_idx);
+
+   return (state->rt_load_mask & bit) &&
+          !(state->unresolved_msaa_mask & bit) &&
+          !(state->rt_2d_view_3d_mask & bit) &&
+          vk_format_to_pipe_format(state->dest_vk_format[rt_idx]) ==
+             PIPE_FORMAT_R8G8B8A8_UNORM;
+}
+
 pco_shader *pvr_uscgen_loadop(pco_ctx *ctx, struct pvr_load_op *load_op)
 {
    unsigned rt_mask = load_op->clears_loads_state.rt_clear_mask |
@@ -1040,6 +1060,7 @@ pco_shader *pvr_uscgen_loadop(pco_ctx *ctx, struct pvr_load_op *load_op)
    u_foreach_bit (rt_idx, rt_mask) {
       bool is_clear = BITFIELD_BIT(rt_idx) &
                       load_op->clears_loads_state.rt_clear_mask;
+      const bool is_raw = pvr_uscgen_loadop_is_raw(load_op, rt_idx);
 
       VkFormat vk_format = pvr_uscgen_format_for_accum(
          load_op->clears_loads_state.dest_vk_format[rt_idx]);
@@ -1048,8 +1069,9 @@ pco_shader *pvr_uscgen_loadop(pco_ctx *ctx, struct pvr_load_op *load_op)
                       sizeof(uint32_t));
 
       const glsl_type *type;
-      if (is_clear) {
-         type = glsl_vec_type(accum_size_dwords);
+      if (is_clear || is_raw) {
+         type = is_raw ? glsl_uvec_type(accum_size_dwords)
+                       : glsl_vec_type(accum_size_dwords);
 
          if (vk_format_is_int(vk_format))
             type = glsl_ivec_type(accum_size_dwords);
@@ -1221,6 +1243,7 @@ pco_shader *pvr_uscgen_loadop(pco_ctx *ctx, struct pvr_load_op *load_op)
                                             FRAG_RESULT_DATA0 + rt_idx);
          assert(var);
          unsigned chans = glsl_get_vector_elements(var->type);
+         const bool is_raw = pvr_uscgen_loadop_is_raw(load_op, rt_idx);
 
          pco_smp_params params = {
             .tex_state = tex_state,
@@ -1241,6 +1264,11 @@ pco_shader *pvr_uscgen_loadop(pco_ctx *ctx, struct pvr_load_op *load_op)
             params.coords = nir_pad_vector(&b, params.coords, 3);
             nir_def *z_slice = nir_channel(&b, tex_meta, PCO_IMAGE_META_Z_SLICE);
             params.coords = nir_vector_insert_imm(&b, params.coords, z_slice, 2);
+         }
+
+         if (is_raw) {
+            assert(chans == 1);
+            params.sample_components = 1;
          }
 
          nir_intrinsic_instr *smp = pco_emit_nir_smp(&b, &params);
