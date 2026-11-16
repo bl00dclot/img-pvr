@@ -451,6 +451,190 @@ static pco_ref fs_is_single_sampled(trans_ctx *tctx)
                                     : fs_is_single_sampled_meta(tctx);
 }
 
+/* XCLIPSE: fused iterate-and-sample (itrsmp). A 2D read whose coordinate is exactly one interpolated
+ * input, smooth, per pixel, that nothing else reads, is one control instruction (iterate the coordinate,
+ * send it to the texture unit) instead of ditr, its 3 group fence, and smp. The vendor driver does the same
+ * for its textured draws (tv: 2 groups). */
+struct itrsmp_info {
+   nir_intrinsic_instr *load; /* The interpolated input. */
+   unsigned coeffs_index;
+   unsigned wcoeffs_index;
+   pco_smp_flags flags;
+   pco_ref tex_state;
+   pco_ref smp_state;
+};
+
+/* The smp_pco that consumes `load` as its only coordinate (via the vec16 that nir_lower_tex builds), or NULL. */
+static nir_intrinsic_instr *itrsmp_smp_of_load(nir_intrinsic_instr *load)
+{
+   if (load->def.num_components != 2 || load->def.bit_size != 32)
+      return NULL;
+
+   nir_alu_instr *vec = NULL;
+   unsigned num_uses = 0;
+   nir_foreach_use (use, &load->def) {
+      num_uses++;
+      nir_instr *parent = nir_src_use_instr(use);
+      if (!parent || parent->type != nir_instr_type_alu)
+         return NULL;
+
+      nir_alu_instr *alu = nir_instr_as_alu(parent);
+      if (alu->op != nir_op_vec16 || (vec && vec != alu))
+         return NULL;
+
+      vec = alu;
+   }
+
+   if (!vec || num_uses != 2)
+      return NULL;
+
+   /* Components 0 and 1 are the two channels of the load, in order; the rest is padding. */
+   for (unsigned c = 0; c < 2; ++c) {
+      if (vec->src[c].src.ssa != &load->def || vec->src[c].swizzle[0] != c)
+         return NULL;
+   }
+
+   if (!list_is_singular(&vec->def.uses))
+      return NULL;
+
+   nir_src *use = list_first_entry(&vec->def.uses, nir_src, use_link);
+   nir_instr *parent = nir_src_use_instr(use);
+   if (!parent || parent->type != nir_instr_type_intrinsic)
+      return NULL;
+
+   nir_intrinsic_instr *smp = nir_instr_as_intrinsic(parent);
+   if (smp->intrinsic != nir_intrinsic_smp_pco || use != &smp->src[0])
+      return NULL;
+
+   return smp;
+}
+
+static pco_ref lookup_load_tex_smp_state(trans_ctx *tctx,
+                                         nir_intrinsic_instr *intr,
+                                         unsigned chans,
+                                         bool smp,
+                                         bool meta,
+                                         pco_ref *dynidx_elem,
+                                         pco_ref *dynidx_stride);
+
+static bool itrsmp_fusable_smp(trans_ctx *tctx,
+                               nir_intrinsic_instr *smp,
+                               nir_intrinsic_instr *load,
+                               struct itrsmp_info *info)
+{
+   if (!PCO_DEBUG(ITRSMP) || tctx->stage != MESA_SHADER_FRAGMENT)
+      return false;
+
+   pco_smp_flags f = { ._ = nir_intrinsic_smp_flags_pco(smp) };
+   if (f.dim != PCO_DIM_2D || f.proj || f.nncoords || f.lod_mode != PCO_LOD_MODE_NORMAL || f.pplod ||
+       f.tao || f.soo || f.sno || f.array || f.integer || f.wrt)
+      return false;
+
+   if (nir_intrinsic_range(smp) != 2)
+      return false;
+
+   /* The coordinate: smooth, per pixel, a plain varying (not position). */
+   if (load->intrinsic != nir_intrinsic_load_interpolated_input &&
+       load->intrinsic != nir_intrinsic_load_input)
+      return false;
+
+   const pco_fs_data *fs_data = &tctx->shader->data.fs;
+   struct nir_io_semantics sem = nir_intrinsic_io_semantics(load);
+   if (sem.location == VARYING_SLOT_POS)
+      return false;
+
+   nir_variable *var = nir_find_variable_with_location(tctx->shader->nir, nir_var_shader_in, sem.location);
+   if (!var)
+      return false;
+
+   enum glsl_interp_mode interp = var->data.interpolation;
+   if (load->intrinsic == nir_intrinsic_load_interpolated_input) {
+      nir_intrinsic_instr *bary = nir_src_as_intrinsic(load->src[0]);
+      if (!bary || bary->intrinsic != nir_intrinsic_load_barycentric_pixel)
+         return false;
+
+      interp = nir_intrinsic_interp_mode(bary);
+   } else if (var->data.sample || var->data.centroid) {
+      return false;
+   }
+
+   if (interp != INTERP_MODE_SMOOTH || !fs_data->uses.w)
+      return false;
+
+   unsigned component = nir_intrinsic_component(load);
+   const pco_range *range = &fs_data->varyings[sem.location];
+   if (component + 2 > ROGUE_USC_COEFFICIENT_SET_SIZE || ROGUE_USC_COEFFICIENT_SET_SIZE * (component + 2) > range->count)
+      return false;
+
+   unsigned coeffs_index = range->start + ROGUE_USC_COEFFICIENT_SET_SIZE * component;
+   unsigned wcoeffs_index = fs_data->uses.z ? ROGUE_USC_COEFFICIENT_SET_SIZE : 0;
+
+   /* Texture and sampler state in shared registers, not dynamically indexed. */
+   nir_intrinsic_instr *tex = nir_src_as_intrinsic(smp->src[1]);
+   nir_intrinsic_instr *sampler = nir_src_as_intrinsic(smp->src[2]);
+   if (!tex || !sampler)
+      return false;
+
+   pco_ref tex_state, smp_state;
+   if (tex->intrinsic == nir_intrinsic_load_preamble) {
+      if (sampler->intrinsic != nir_intrinsic_load_preamble)
+         return false;
+
+      tex_state = pco_ref_hwreg_vec(nir_intrinsic_base(tex), PCO_REG_CLASS_SHARED, ROGUE_NUM_TEXSTATE_DWORDS);
+      smp_state = pco_ref_hwreg_vec(nir_intrinsic_base(sampler), PCO_REG_CLASS_SHARED, ROGUE_NUM_TEXSTATE_DWORDS);
+   } else if (tex->intrinsic == nir_intrinsic_load_tex_state_pco &&
+              sampler->intrinsic == nir_intrinsic_load_smp_state_pco) {
+      if (!nir_src_is_const(tex->src[0]) || !nir_src_is_const(sampler->src[0]))
+         return false;
+
+      tex_state = lookup_load_tex_smp_state(tctx, tex, ROGUE_NUM_TEXSTATE_DWORDS, false, false, NULL, NULL);
+      smp_state = lookup_load_tex_smp_state(tctx, sampler, ROGUE_NUM_TEXSTATE_DWORDS, true, false, NULL, NULL);
+   } else {
+      return false;
+   }
+
+   /* The instruction addresses everything in units of four registers, up to 252. */
+   if ((coeffs_index | wcoeffs_index | pco_ref_get_reg_index(tex_state) | pco_ref_get_reg_index(smp_state)) % 4 ||
+       MAX4(coeffs_index, wcoeffs_index, pco_ref_get_reg_index(tex_state), pco_ref_get_reg_index(smp_state)) > 252)
+      return false;
+
+   info->load = load;
+   info->coeffs_index = coeffs_index;
+   info->wcoeffs_index = wcoeffs_index;
+   info->flags = f;
+   info->tex_state = tex_state;
+   info->smp_state = smp_state;
+   return true;
+}
+
+/* True if this load is folded into an itrsmp (and so emits nothing itself). */
+static bool itrsmp_fused_load(trans_ctx *tctx, nir_intrinsic_instr *load)
+{
+   struct itrsmp_info info;
+   nir_intrinsic_instr *smp = itrsmp_smp_of_load(load);
+   return smp && itrsmp_fusable_smp(tctx, smp, load, &info);
+}
+
+static bool itrsmp_fusable(trans_ctx *tctx, nir_intrinsic_instr *smp, struct itrsmp_info *info)
+{
+   if (smp->intrinsic != nir_intrinsic_smp_pco)
+      return false;
+
+   nir_def *data = smp->src[0].ssa;
+   if (!nir_def_is_alu(data))
+      return false;
+
+   nir_alu_instr *vec = nir_def_as_alu(data);
+   if (vec->op != nir_op_vec16)
+      return false;
+
+   nir_intrinsic_instr *load = nir_src_as_intrinsic(vec->src[0].src);
+   if (!load || itrsmp_smp_of_load(load) != smp)
+      return false;
+
+   return itrsmp_fusable_smp(tctx, smp, load, info);
+}
+
 /**
  * \brief Translates a NIR fs load_input intrinsic into PCO.
  *
@@ -2239,6 +2423,41 @@ static pco_instr *lower_smp(trans_ctx *tctx,
    return smp;
 }
 
+static pco_instr *lower_itrsmp(trans_ctx *tctx,
+                                nir_intrinsic_instr *intr,
+                                const struct itrsmp_info *info,
+                                pco_ref dest)
+{
+   /* Same channel trimming as lower_smp(): only the leading channels the shader reads. */
+   unsigned chans = pco_ref_get_chans(dest);
+   const unsigned chans_read = MAX2(util_last_bit(nir_def_components_read(&intr->def)), 1);
+   if (intr->def.bit_size == 32 && chans_read < chans)
+      chans = chans_read;
+
+   pco_instr *itrsmp = pco_instr_create(tctx->func, 1, 6);
+   itrsmp->op = PCO_OP_ITRSMP;
+   itrsmp->dest[0] = dest;
+   itrsmp->src[0] = pco_ref_drc(PCO_DRC_0);
+   itrsmp->src[1] = pco_ref_hwreg_vec(info->coeffs_index,
+                                      PCO_REG_CLASS_COEFF,
+                                      ROGUE_USC_COEFFICIENT_SET_SIZE * 2);
+   itrsmp->src[2] = pco_ref_hwreg_vec(info->wcoeffs_index, PCO_REG_CLASS_COEFF, ROGUE_USC_COEFFICIENT_SET_SIZE);
+   itrsmp->src[3] = info->tex_state;
+   itrsmp->src[4] = info->smp_state;
+   itrsmp->src[5] = pco_ref_imm8(chans);
+
+   pco_instr_set_itr_mode(itrsmp, PCO_ITR_MODE_PIXEL);
+   pco_instr_set_dim(itrsmp, info->flags.dim);
+   pco_instr_set_fcnorm(itrsmp, info->flags.fcnorm);
+   /* The vendor's itrsmp group sets the extended execution condition ex_zx (the fragment's header byte 2 bit 0):
+    * the group runs for every instance, not only the enabled ones. Matched bit for bit (lanes/itrsmp.md). */
+   pco_instr_set_exec_cnd(itrsmp, PCO_EXEC_CND_EX_ZX);
+
+   pco_builder_insert_instr(&tctx->b, itrsmp);
+
+   return itrsmp;
+}
+
 static pco_instr *lower_alphatst(trans_ctx *tctx,
                                  pco_ref dest,
                                  pco_ref src0,
@@ -2582,14 +2801,19 @@ static pco_instr *trans_intr(trans_ctx *tctx, nir_intrinsic_instr *intr)
    case nir_intrinsic_load_input:
       if (tctx->stage == MESA_SHADER_VERTEX)
          instr = trans_load_input_vs(tctx, intr, dest);
-      else if (tctx->stage == MESA_SHADER_FRAGMENT)
+      else if (tctx->stage == MESA_SHADER_FRAGMENT) {
+         if (itrsmp_fused_load(tctx, intr))
+            return NULL;
          instr = trans_load_input_fs(tctx, intr, dest, false);
+      }
       else
          UNREACHABLE("Unsupported stage for \"nir_intrinsic_load_input\".");
       break;
 
    case nir_intrinsic_load_interpolated_input:
       assert(tctx->stage == MESA_SHADER_FRAGMENT);
+      if (itrsmp_fused_load(tctx, intr))
+         return NULL;
       instr = trans_load_input_fs(tctx, intr, dest, true);
       break;
 
@@ -2961,9 +3185,14 @@ static pco_instr *trans_intr(trans_ctx *tctx, nir_intrinsic_instr *intr)
    case nir_intrinsic_smp_coeffs_pco:
    case nir_intrinsic_smp_raw_pco:
    case nir_intrinsic_smp_pco:
-   case nir_intrinsic_smp_write_pco:
-      instr = lower_smp(tctx, intr, &dest, src[0]);
+   case nir_intrinsic_smp_write_pco: {
+      struct itrsmp_info itrsmp;
+      if (itrsmp_fusable(tctx, intr, &itrsmp))
+         instr = lower_itrsmp(tctx, intr, &itrsmp, dest);
+      else
+         instr = lower_smp(tctx, intr, &dest, src[0]);
       break;
+   }
 
    case nir_intrinsic_alphatst_pco:
       instr = lower_alphatst(tctx, dest, src[0], src[1], src[2]);
@@ -3763,6 +3992,16 @@ static pco_instr *trans_alu(trans_ctx *tctx, nir_alu_instr *alu)
 {
    const nir_op_info *info = &nir_op_infos[alu->op];
    unsigned num_srcs = info->num_inputs;
+
+   /* XCLIPSE: the coordinate vector of a fused itrsmp is never built. */
+   if (alu->op == nir_op_vec16 && list_is_singular(&alu->def.uses)) {
+      nir_src *use = list_first_entry(&alu->def.uses, nir_src, use_link);
+      nir_instr *user = nir_src_use_instr(use);
+      struct itrsmp_info itrsmp;
+      if (user && user->type == nir_instr_type_intrinsic &&
+          itrsmp_fusable(tctx, nir_instr_as_intrinsic(user), &itrsmp))
+         return NULL;
+   }
 
    pco_ref dest = pco_ref_nir_def_t(&alu->def, tctx);
 

@@ -44,6 +44,7 @@ REF_MAP = enum_type('ref_map', [
    ('drc', 'drc'),
    ('temp', 'temp'),
    ('coeff', 'coeff'),
+   ('shared', 'shared'),
 ])
 
 # Enum mappings.
@@ -1795,6 +1796,35 @@ encode_map(O_DITRP,
       ])
    ],
    op_ref_maps=[('ctrl', ['temp'], ['drc', 'coeff', 'coeff', 'imm'])]
+)
+
+encode_map(O_ITRSMP,
+   encodings=[
+      (I_ITRSMP, [
+         ('dest', ('pco_ref_get_temp', DEST(0))),
+
+         ('coff', ('pco_ref_get_coeff', SRC(1))),
+         ('p', 'iter_mul'),
+
+         ('texoff', ('pco_ref_get_shared', SRC(3))),
+         ('drc', ('pco_ref_get_drc', SRC(0))),
+         ('mode', OM_ITR_MODE),
+
+         ('smpoff', ('pco_ref_get_shared', SRC(4))),
+         ('dmn', OM_DIM),
+
+         ('woff', ('pco_ref_get_coeff', SRC(2))),
+         ('proj', OM_PROJ),
+         ('sat', OM_SAT),
+
+         ('f16', OM_F16),
+         ('sched_ctrl', OM_SCHED),
+         ('chan', ('pco_ref_get_imm', SRC(5))),
+         ('nncoords', OM_NNCOORDS),
+         ('fcnorm', OM_FCNORM),
+      ])
+   ],
+   op_ref_maps=[('ctrl', ['temp'], ['drc', 'coeff', 'coeff', 'shared', 'shared', 'imm'])]
 )
 
 encode_map(O_CNDST,
@@ -3824,6 +3854,18 @@ group_map(O_DITRP,
       ('ctrlop', 'ditr')
    ]),
    enc_ops=[('ctrl', O_DITRP)]
+)
+
+group_map(O_ITRSMP,
+   hdr=(I_IGRP_HDR_CONTROL, [
+      ('olchk', False),
+      ('w1p', False),
+      ('w0p', False),
+      ('cc', OM_EXEC_CND),
+      ('miscctl', False),
+      ('ctrlop', 'itrsmp')
+   ]),
+   enc_ops=[('ctrl', O_ITRSMP)]
 )
 
 group_map(O_CNDST,

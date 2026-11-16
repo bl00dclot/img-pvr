@@ -73,6 +73,7 @@ enum pco_debug {
    PCO_DEBUG_NO_FENCE = BITFIELD64_BIT(9),
    PCO_DEBUG_FENCE1 = BITFIELD64_BIT(10),
    PCO_DEBUG_FUSE_ALL = BITFIELD64_BIT(11),
+   PCO_DEBUG_ITRSMP = BITFIELD64_BIT(12),
 };
 
 extern uint64_t pco_debug;
@@ -2224,6 +2225,20 @@ static inline unsigned pco_ref_get_coeff(pco_ref ref)
 {
    assert(pco_ref_is_reg(ref));
    assert(pco_ref_get_reg_class(ref) == PCO_REG_CLASS_COEFF);
+
+   return pco_ref_get_reg_index(ref);
+}
+
+/**
+ * \brief Returns the shared register index from its reference type.
+ *
+ * \param[in] ref Reference.
+ * \return Shared register index.
+ */
+static inline unsigned pco_ref_get_shared(pco_ref ref)
+{
+   assert(pco_ref_is_reg(ref));
+   assert(pco_ref_get_reg_class(ref) == PCO_REG_CLASS_SHARED);
 
    return pco_ref_get_reg_index(ref);
 }

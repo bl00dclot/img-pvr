@@ -15,7 +15,7 @@ if [ -n "$PROBE" ] && [ -n "$GLSLC" ]; then
    for f in "$PROBE"/*.vert "$PROBE"/*.frag; do "$GLSLC" -O -o "$W/probe_$(basename "$f").spv" "$f"; done
 fi
 docker run --rm --network none --cap-drop ALL --security-opt no-new-privileges --user "$(id -u):$(id -g)" \
-   -e HOME=/tmp -e BUILD="$BUILD" -v "$ROOT:/src:ro" -v "$W:/w" "$IMAGE" bash -c '
+   -e HOME=/tmp -e BUILD="$BUILD" -e PCO_DEBUG -v "$ROOT:/src:ro" -v "$W:/w" "$IMAGE" bash -c '
 set -euo pipefail
 for f in /src/tools/vktest/bench/*.vert /src/tools/vktest/bench/*.frag; do
    glslangValidator -V -o "/w/bench_$(basename "$f").spv" "$f" >/dev/null

@@ -473,6 +473,9 @@ O_DITRP = hw_op('ditrp', [OM_EXEC_CND, OM_ITR_MODE, OM_SAT, OM_SCHED, OM_F16], 1
 O_DITRP_WRITE = hw_op('ditrp.write', [OM_EXEC_CND, OM_ITR_MODE, OM_SAT, OM_SCHED, OM_F16], 1, 4)
 O_DITRP_READ = hw_op('ditrp.read', [OM_EXEC_CND, OM_ITR_MODE, OM_SAT, OM_SCHED, OM_F16], 1, 3)
 
+# XCLIPSE: fused iterate-and-sample (itrsmp2d): { dest, drc, coeffs, w coeffs, tex state, smp state, chans }.
+O_ITRSMP = hw_op('itrsmp', [OM_EXEC_CND, OM_ITR_MODE, OM_DIM, OM_PROJ, OM_SAT, OM_F16, OM_SCHED, OM_NNCOORDS, OM_FCNORM], 1, 6)
+
 O_CNDST = hw_op('cndst', [OM_EXEC_CND, OM_CND], 2, 2)
 O_CNDEF = hw_op('cndef', [OM_EXEC_CND, OM_CND], 2, 2)
 O_CNDSM = hw_op('cndsm', [OM_EXEC_CND, OM_CND], 2, 2)
