@@ -398,9 +398,33 @@ static inline bool can_fwd_prop_src(const pco_instr *to_instr,
 
    if (pco_ref_is_reg(*from) &&
        pco_ref_get_reg_class(*from) == PCO_REG_CLASS_PIXOUT) {
-      return false;
+      /* XCLIPSE: a read of the destination colour (blending) goes straight into
+       * the unpack that consumes it (the unpack's group then carries the olchk),
+       * instead of through a copy group. Only unpck: the other consumers have not
+       * been checked against the pixout read mapping. */
+      if (to_instr->op != PCO_OP_UNPCK || !pco_instr_has_olchk(to_instr))
+         return false;
    }
 
+   return true;
+}
+
+/* True if a pixout register is written between from_instr and to_instr. */
+static inline bool pixout_written_between(pco_instr *from_instr,
+                                          const pco_instr *to_instr)
+{
+   pco_foreach_instr_in_func_from (i, from_instr) {
+      if (i == to_instr)
+         return false;
+
+      pco_foreach_instr_dest (pdest, i) {
+         if (pco_ref_is_reg(*pdest) &&
+             pco_ref_get_reg_class(*pdest) == PCO_REG_CLASS_PIXOUT)
+            return true;
+      }
+   }
+
+   /* Not found in the same function after it: be conservative. */
    return true;
 }
 
@@ -422,6 +446,11 @@ static inline bool try_fwd_prop_instr(pco_instr **writes, pco_instr *instr)
          continue;
 
       if (!can_fwd_prop_src(instr, psrc, &parent_instr->src[0]))
+         continue;
+
+      if (pco_ref_is_reg(parent_instr->src[0]) &&
+          pco_ref_get_reg_class(parent_instr->src[0]) == PCO_REG_CLASS_PIXOUT &&
+          pixout_written_between(parent_instr, instr))
          continue;
 
       /* Propagate the source. */
