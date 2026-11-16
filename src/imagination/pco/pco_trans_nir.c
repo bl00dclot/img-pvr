@@ -1338,7 +1338,18 @@ static pco_instr *trans_load_buffer(trans_ctx *tctx,
                 pco_ref_null(),
                 .s = true);
 
+   /* XCLIPSE: only dynamic buffers carry a dynamic offset (descriptor dword 3); for every other binding that
+    * dword is zero, and its add64_32 is a group and two registers per read (game corpus, lean fs: 23 reads). */
+   unsigned desc_set, binding;
+   pco_unpack_desc(packed_desc, &desc_set, &binding);
+   bool needs_dyn_off = common->desc_sets[desc_set].bindings[binding].is_dynamic_buffer;
+
    pco_ref addr_comps_dyn_off[2];
+   if (!needs_dyn_off) {
+      addr_comps_dyn_off[0] = addr_comps[0];
+      addr_comps_dyn_off[1] = addr_comps[1];
+      goto have_addr;
+   }
    pco_ref_new_ssa_addr_comps(tctx->func, addr_comps_dyn_off);
 
    pco_ref dyn_off_reg = pco_ref_hwreg(sh_index, PCO_REG_CLASS_SHARED);
@@ -1366,6 +1377,7 @@ static pco_instr *trans_load_buffer(trans_ctx *tctx,
                 pco_ref_null(),
                 .s = true);
 
+have_addr:;
    pco_ref addr = pco_ref_new_ssa_addr(tctx->func);
    pco_vec(&tctx->b, addr, ARRAY_SIZE(addr_comps_dyn_off), addr_comps_dyn_off);
 

@@ -477,6 +477,7 @@ static void io_binding(struct pvr_cache_io *io, pco_binding_data *b)
    IO_BOOL(b->used);
    IO_BOOL(b->is_img_smp);
    IO_BOOL(b->is_inline_ubo);
+   IO_BOOL(b->is_dynamic_buffer);
 }
 
 /* Hard sizes: the xfb info is two dozen bytes plus 16 per output. */
