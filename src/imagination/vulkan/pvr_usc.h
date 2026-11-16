@@ -159,6 +159,12 @@ pco_shader *pvr_uscgen_tq(pco_ctx *ctx,
 
 pco_shader *pvr_uscgen_loadop(pco_ctx *ctx, struct pvr_load_op *load_op);
 
+/* True when the load program reads render target rt_idx as raw 32-bit words
+ * through an R32_UINT view of the image.
+ */
+bool pvr_uscgen_loadop_is_raw(const struct pvr_load_op *load_op,
+                              unsigned rt_idx);
+
 /* Clear attachment shader generation. */
 struct pvr_clear_attach_props {
    unsigned dword_count;
