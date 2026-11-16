@@ -44,6 +44,8 @@ static const struct debug_named_value pco_debug_options[] = {
    { "no_dma_cache", PCO_DEBUG_NO_DMA_CACHE, "Disable DMA cache." },
    { "no_fence", PCO_DEBUG_NO_FENCE, "XCLIPSE: emit no ditr fence (experiment)." },
    { "fence1", PCO_DEBUG_FENCE1, "XCLIPSE: ditr fence as one plain br.next (experiment)." },
+   { "no_coissue", PCO_DEBUG_NO_COISSUE, "XCLIPSE: do not pair independent main-ALU ops in one group (A/B)." },
+   { "no_fwdfix", PCO_DEBUG_NO_FWDFIX, "XCLIPSE: one forward-propagation round only, as before (A/B)." },
    DEBUG_NAMED_VALUE_END,
 };
 

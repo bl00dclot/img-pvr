@@ -12,15 +12,16 @@ the PCO compiler, takes SPIR-V, runs it through the same steps as `pvr_graphics_
 flock <repo>/.locks/build docker run --rm --user $(id -u):$(id -g) -e HOME=/tmp -v $PWD:/src img-pvr-build:trixie \
     bash -c 'ninja -C build-host src/imagination/pco/pco_stats'      # build-host from ./build.sh stage 1 (or its meson setup line)
 # 2. compile the corpus and collect stats
-tools/pco-stats/run.sh [-b build-host] [-p <probe shaders dir> -g <glslc>] before.txt
+tools/pco-stats/run.sh [-b build-host] [-p <probe shaders dir> -g <glslc>] [-c <extra corpus dir>] before.txt
 # ... change the compiler, rebuild pco_stats ...
 tools/pco-stats/run.sh after.txt
 # 3. compare
 tools/pco-stats/compare.py before.txt after.txt [-s igrps,temps,spills,code_size,smp] [-a]
 ```
 
-`pco_stats` itself: `pco_stats [-f rgba8|rgba16f|rgba32f] [-b] [-r] [-d] <name> <vs.spv|-> <fs.spv>`, two lines out
-(`vs`, `fs`), `-d` prints the grouped IR to stderr. Needs the vertex shader too, because `pco_link_nir`
+`pco_stats` itself: `pco_stats [-f rgba8|rgba16f|rgba32f] [-b] [-n rts] [-r] [-d] <name> <vs.spv|-> <fs.spv>`, two lines out
+(`vs`, `fs`), `-d` prints the grouped IR to stderr, `-n` is the number of identical colour attachments (1 to 4, outputs
+at registers 0, 1, ...; `-b` blends all of them). Needs the vertex shader too, because `pco_link_nir`
 changes the fragment shader's inputs.
 
 Result line, keys are what `PCO_DEBUG_PRINT=stats` prints plus the sample counts from the grouped IR:
@@ -44,13 +45,23 @@ from the shaders' variables (combined sampler = image + sampler descriptor, no d
 full 128 byte range). SPIR-V to NIR uses the runtime's `vk_spirv_to_nir` steps without a `vk_device` and with the
 Vulkan 1.0 core capabilities.
 
-Not modelled: input attachments (the probe's `t3sub` is skipped), multiple render targets and tile buffers, multisampling,
+Not modelled: input attachments (the probe's `t3sub` is skipped), tile buffers and attachments of differing formats (`-n` gives N identical ones), multisampling,
 dynamic state, multiview, ycbcr, transform feedback, compute (`c1.comp`), other stages. A shader that needs
 one of these either fails loudly or compiles with different pipeline state than the device would use; that is the first
 thing to look at when a host line disagrees with the device.
 
 The allocation helpers in `pco_stats.c` are copied from `src/imagination/vulkan/pvr_arch_pipeline.c` (marked); if the
 driver changes them, update the copy. The device check below is what notices drift.
+
+## Extra corpus (`run.sh -c DIR`)
+
+`-c DIR` runs `DIR/corpus.txt` after the built-in `corpus.txt`; the same line format, and `extra:name` names `DIR/spv/name.spv`
+(SPIR-V built by whoever owns the directory, e.g. from an application's own shaders that cannot live in this repository).
+A pipeline that fails (pco_stats exits non-zero) is reported as `FAIL name` on stderr and left out of the result file.
+`ASAN_OPTIONS`, `UBSAN_OPTIONS` and `NIR_DEBUG` of the caller are passed through, so a sanitizer/validation build
+(`meson setup build-dbg ... -Dbuildtype=debug -Db_sanitize=address,undefined -Db_lundef=false`, the host-tools options of
+build.sh stage 1, then `ninja -C build-dbg src/imagination/pco/pco_stats`) runs the same corpus with `-b build-dbg`.
+Vertex inputs are modelled as 32 bits per component of the declared type (float, uint or int, 1 to 4 components).
 
 ## Corpus
 
