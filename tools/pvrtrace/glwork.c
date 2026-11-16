@@ -173,11 +173,26 @@ static int scene(const char *mode, GLuint resolve_fbo)
  * tools/gputrace times every 3D job; the counterpart of tools/vktest/vkbench (same modes, texture pattern,
  * filtering and blend). Highp throughout except alum/tvm, as in the Vulkan shaders. With
  * GLWORK_DUMP_BINARY=<file> the program binary is written out, for an offline look at what the vendor
- * compiler emits. With BENCH_WALL=<warmup> the <warmup> passes run first (each flushed and finished), then
+ * compiler emits. With BENCH_WALL=<ms> passes run first (each finished) until the GED level reads 0 (680 MHz) and <ms> more
+ * (cap 5 s), then
  * the <iterations> passes are timed back to back with CLOCK_MONOTONIC (clear/draw + glFlush per pass, one
  * glFinish at the end) and "wall gl <mode> <ms>/pass freq <before> -> <after>" is printed, the GED clock
  * (read-only /sys/kernel/ged/hal/current_freqency) sampled just before and after. Firmware job times are
  * only valid inside one clock level; wall time is not affected. */
+static double now_ms(void)
+{
+   struct timespec t;
+   clock_gettime(CLOCK_MONOTONIC, &t);
+   return t.tv_sec * 1e3 + t.tv_nsec / 1e6;
+}
+
+static double cpu_ms(void)
+{
+   struct timespec t;
+   clock_gettime(CLOCK_PROCESS_CPUTIME_ID, &t);
+   return t.tv_sec * 1e3 + t.tv_nsec / 1e6;
+}
+
 static void ged_freq(char *out, size_t n)
 {
    FILE *f = fopen("/sys/kernel/ged/hal/current_freqency", "r");
@@ -278,13 +293,28 @@ static int bench(int argc, char **argv)
       const int warmup = atoi(wall_env);
       char f0[32], f1[32];
       struct timespec t0, t1;
-      for (int it = 0; it < warmup; it++) {
-         if (!blend)
-            glClear(GL_COLOR_BUFFER_BIT);
-         glDrawArrays(GL_TRIANGLES, 0, 3);
+      double start = now_ms(), top = 0;
+      int warm = 0;
+      for (;;) {
+         for (int k = 0; k < 64; k++) { /* batches: one pass per finish leaves the GPU mostly idle, GED stays low */
+            if (!blend)
+               glClear(GL_COLOR_BUFFER_BIT);
+            glDrawArrays(GL_TRIANGLES, 0, 3);
+            glFlush();
+         }
          glFinish();
+         warm += 64;
+         double t = now_ms();
+         if (!top &&  t - start > 200) { /* a 0 read earlier is the previous process's */
+            ged_freq(f0, sizeof(f0));
+            if (!strncmp(f0, "0 ", 2))
+               top = t;
+         }
+         if ((top && t - top >= warmup) || t - start > 5000)
+            break;
       }
       ged_freq(f0, sizeof(f0));
+      const double c0 = cpu_ms();
       clock_gettime(CLOCK_MONOTONIC, &t0);
       for (int it = 0; it < iterations; it++) {
          if (!blend)
@@ -294,10 +324,11 @@ static int bench(int argc, char **argv)
       }
       glFinish();
       clock_gettime(CLOCK_MONOTONIC, &t1);
+      const double c1 = cpu_ms();
       ged_freq(f1, sizeof(f1));
-      printf("wall gl %s %.4f ms/pass (%d passes, %d warm-up) freq %s -> %s\n", mode,
-             ((t1.tv_sec - t0.tv_sec) * 1e3 + (t1.tv_nsec - t0.tv_nsec) / 1e6) / iterations, iterations, warmup,
-             f0, f1);
+      printf("wall gl %s %.4f ms/pass (%d passes, %d warm-up passes) freq %s -> %s, process cpu %.4f ms/pass\n", mode,
+             ((t1.tv_sec - t0.tv_sec) * 1e3 + (t1.tv_nsec - t0.tv_nsec) / 1e6) / iterations, iterations, warm,
+             f0, f1, (c1 - c0) / iterations);
    } else {
       for (int it = 0; it < iterations; it++) {
          if (!blend)
