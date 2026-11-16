@@ -4066,13 +4066,13 @@ pvr_is_large_clear_required(const struct pvr_cmd_buffer *const cmd_buffer)
           (render_area.extent.height > (vf_max_y / 2) - 1);
 }
 
-static void pvr_emit_clear_words(struct pvr_cmd_buffer *const cmd_buffer,
-                                 struct pvr_sub_cmd_gfx *const sub_cmd)
+static void pvr_emit_vdm_words(struct pvr_cmd_buffer *const cmd_buffer,
+                               struct pvr_sub_cmd_gfx *const sub_cmd,
+                               const uint32_t *vdm_state)
 {
    struct pvr_device *device = cmd_buffer->device;
    struct pvr_csb *csb = &sub_cmd->control_stream;
    uint32_t vdm_state_size_in_dw;
-   const uint32_t *vdm_state;
    uint32_t *stream;
 
    vdm_state_size_in_dw =
@@ -4086,14 +4086,21 @@ static void pvr_emit_clear_words(struct pvr_cmd_buffer *const cmd_buffer,
       return;
    }
 
-   if (pvr_is_large_clear_required(cmd_buffer))
-      vdm_state = device->static_clear_state->large_clear_vdm_words;
-   else
-      vdm_state = device->static_clear_state->vdm_words;
-
    memcpy(stream, vdm_state, PVR_DW_TO_BYTES(vdm_state_size_in_dw));
 
    pvr_csb_clear_relocation_mark(csb);
+}
+
+static void pvr_emit_clear_words(struct pvr_cmd_buffer *const cmd_buffer,
+                                 struct pvr_sub_cmd_gfx *const sub_cmd)
+{
+   struct pvr_device *device = cmd_buffer->device;
+
+   pvr_emit_vdm_words(cmd_buffer,
+                      sub_cmd,
+                      pvr_is_large_clear_required(cmd_buffer)
+                         ? device->static_clear_state->large_clear_vdm_words
+                         : device->static_clear_state->vdm_words);
 }
 
 /* Full-screen object that never passes the depth test and writes no tags,
@@ -4118,7 +4125,16 @@ pvr_insert_invisible_obj(struct pvr_cmd_buffer *const cmd_buffer,
 
    list_add(&ppp_bo->link, &cmd_buffer->bo_list);
 
-   pvr_emit_clear_words(cmd_buffer, sub_cmd);
+   /* XCLIPSE: a 32x32 triangle at the origin is enough to give the tiler a primitive, when the render area
+    * contains the origin tile; the quarter-framebuffer triangle put an object in every tile's list and
+    * cost 0.02-0.07 ms of TA and 3D time per render (docs/ddk113/TESTING.md, perjob).
+    */
+   const VkRect2D render_area = cmd_buffer->state.render_pass_info.render_area;
+   if (device->static_clear_state->invis_vdm_words &&
+       render_area.offset.x == 0 && render_area.offset.y == 0)
+      pvr_emit_vdm_words(cmd_buffer, sub_cmd, device->static_clear_state->invis_vdm_words);
+   else
+      pvr_emit_clear_words(cmd_buffer, sub_cmd);
 
    return sub_cmd->control_stream.status;
 }

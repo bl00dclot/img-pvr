@@ -118,6 +118,13 @@ struct pvr_device_static_clear_state {
    const uint32_t *vdm_words;
    const uint32_t *large_clear_vdm_words;
 
+   /* XCLIPSE: the render's dummy object (pvr_insert_invisible_obj) as one 32x32 triangle at the origin instead of
+    * the quarter-framebuffer one. NULL when it could not be built: the full-size words are used then.
+    */
+   struct pvr_suballoc_bo *invis_vertices_bo;
+   struct pvr_pds_upload invis_pds;
+   const uint32_t *invis_vdm_words;
+
    struct pvr_suballoc_bo *usc_clear_attachment_programs;
    struct pvr_suballoc_bo *pds_clear_attachment_programs;
    /* TODO: See if we can use PVR_CLEAR_ATTACHMENT_PROGRAM_COUNT to save some

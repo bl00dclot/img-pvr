@@ -577,6 +577,39 @@ VkResult pvr_device_init_graphics_static_clear_state(struct pvr_device *device)
                             state_buffer);
    state->large_clear_vdm_words = state_buffer;
 
+   /* XCLIPSE: a second set of the same words for a 32x32 triangle at the origin (the dummy object of every
+    * render); best effort, the full-size words stay as the fallback.
+    */
+   {
+      const VkRect2D tile_rect = { .offset = { 0, 0 }, .extent = { 32, 32 } };
+      uint32_t *invis_words = vk_alloc(&device->vk.alloc,
+                                       PVR_DW_TO_BYTES(vdm_state_size_in_dw),
+                                       8,
+                                       VK_SYSTEM_ALLOCATION_SCOPE_DEVICE);
+
+      if (invis_words &&
+          pvr_clear_vertices_upload(device, &tile_rect, 0.0f, &state->invis_vertices_bo) == VK_SUCCESS) {
+         if (pvr_pds_clear_vertex_shader_program_create_and_upload(&pds_program,
+                                                                   device,
+                                                                   state->invis_vertices_bo,
+                                                                   &state->invis_pds) == VK_SUCCESS) {
+            pvr_pack_clear_vdm_state(&device->pdevice->dev_info,
+                                     &state->invis_pds,
+                                     pds_program.temps_used,
+                                     3,
+                                     4 * sizeof(uint32_t),
+                                     1,
+                                     invis_words);
+            state->invis_vdm_words = invis_words;
+            invis_words = NULL;
+         } else {
+            pvr_bo_suballoc_free(state->invis_vertices_bo);
+            state->invis_vertices_bo = NULL;
+         }
+      }
+      vk_free(&device->vk.alloc, invis_words);
+   }
+
    result = pvr_device_init_clear_attachment_programs(device);
    if (result != VK_SUCCESS)
       goto err_free_vdm_state;
@@ -616,6 +649,12 @@ void pvr_device_finish_graphics_static_clear_state(struct pvr_device *device)
     */
    /* Cast away the const :( */
    vk_free(&device->vk.alloc, (void *)state->vdm_words);
+
+   if (state->invis_vdm_words) {
+      vk_free(&device->vk.alloc, (void *)state->invis_vdm_words);
+      pvr_bo_suballoc_free(state->invis_pds.pvr_bo);
+      pvr_bo_suballoc_free(state->invis_vertices_bo);
+   }
 
    pvr_bo_suballoc_free(state->pds.pvr_bo);
    pvr_bo_suballoc_free(state->vertices_bo);

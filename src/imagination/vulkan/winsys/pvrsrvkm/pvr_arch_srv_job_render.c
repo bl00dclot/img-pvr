@@ -51,6 +51,7 @@
 #include "util/log.h"
 #include "util/macros.h"
 #include "util/os_file.h"
+#include "util/os_time.h"
 #include "util/u_math.h"
 #include "vk_alloc.h"
 #include "vk_log.h"
@@ -978,6 +979,13 @@ VkResult PVR_PER_ARCH(srv_winsys_render_submit)(
                                         0,
                                         0,
                                         0);
+      /* XCLIPSE: the kernel answers RETRY while the firmware's command queue for the context is full, which
+       * a long run of renders in one submit reaches after about 500 kicks: the loop then re-issued the ioctl
+       * about 15 times per kick and the submitting thread used a whole core (0.31 ms of CPU per 0.34 ms
+       * render). Waiting a little between tries costs nothing: the queue holds tens of ms of work.
+       */
+      if (result == VK_NOT_READY)
+         os_time_sleep(100);
    } while (result == VK_NOT_READY);
 
    if (result != VK_SUCCESS)
