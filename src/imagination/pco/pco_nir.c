@@ -1074,11 +1074,13 @@ void pco_lower_nir(pco_ctx *ctx, nir_shader *nir, pco_data *data)
       if (!internal)
          NIR_PASS(_, nir, pco_nir_lower_sample_mask_out, &data->fs);
 
-      /* XCLIPSE: when nothing but the ISP feedback / early-fragment select that pco_nir_pfo adds reads
-       * gl_IsHelperInvocation (no explicit read, no helper-write guard), the invocation need not start
-       * as a helper: the ISP ignores feedback for uncovered pixels, and everything else runs to the end
-       * either way (no hardware kill), so demote and terminate coincide. This drops the sample-mask
-       * arithmetic from every discarding shader (disc FS 18 -> fewer instruction groups). */
+      /* XCLIPSE: when nothing but the ISP feedback that pco_nir_pfo adds reads gl_IsHelperInvocation
+       * (no explicit read, no helper-write guard), the invocation need not start as a helper: there is no
+       * hardware kill, so demote and terminate coincide, and the sample-mask arithmetic goes (disc FS
+       * 18 -> 12 groups, pco_stats). Premise, assumed and tested only by pixel sums (docs/ddk113/TESTING.md,
+       * Open): the ISP ignores the feedback for pixels the rasterizer did not cover. With
+       * early_fragment_tests the old behaviour is kept: handle_early_frag adds is_helper reads there, and
+       * dEQP does not cover that path. */
       bool user_helper_read = false;
       nir_foreach_function_impl (impl, nir) {
          nir_foreach_block (block, impl) {
@@ -1091,7 +1093,8 @@ void pco_lower_nir(pco_ctx *ctx, nir_shader *nir, pco_data *data)
       }
 
       NIR_PASS(_, nir, pco_nir_pfo, &data->fs);
-      NIR_PASS(_, nir, nir_lower_is_helper_invocation_opts, user_helper_read || internal);
+      NIR_PASS(_, nir, nir_lower_is_helper_invocation_opts, user_helper_read || internal ||
+                  nir->info.fs.early_fragment_tests);
       NIR_PASS(_, nir, pco_nir_lower_fs_intrinsics, &data->fs);
    } else if (nir->info.stage == MESA_SHADER_VERTEX) {
       /* If needed, duplicate the point size for xfb prior to it being clamped.

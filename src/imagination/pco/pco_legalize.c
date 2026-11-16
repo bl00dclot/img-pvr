@@ -166,6 +166,9 @@ static bool legalize_fence(pco_instr *instr)
    pco_builder b =
       pco_builder_create(instr->parent_func, pco_cursor_after_instr(instr));
 
+   /* XCLIPSE: experiments for the ditr fence, off by default: no_fence drops it, fence1 replaces it with
+    * one br.next. Neither made the disc job faster (0.345 and 0.351 ms against 0.346), so the full fence
+    * stays (docs/ddk113/TESTING.md, board 2). */
    if (PCO_DEBUG(NO_FENCE)) {
       pco_instr_delete(instr);
       return true;

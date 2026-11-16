@@ -409,7 +409,9 @@ static inline bool can_fwd_prop_src(const pco_instr *to_instr,
    return true;
 }
 
-/* True if a pixout register is written between from_instr and to_instr. */
+/* XCLIPSE: True if a pixout register is written between from_instr and to_instr. Used when a read of
+ * po0 is forwarded into its consumer (blend: unpck reads po0 directly, FS 8 -> 7 groups, pco_stats):
+ * the forward is refused if po0 gets a new value in between, and when the end is not found. */
 static inline bool pixout_written_between(pco_instr *from_instr,
                                           const pco_instr *to_instr)
 {

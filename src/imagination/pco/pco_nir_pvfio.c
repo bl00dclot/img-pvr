@@ -37,7 +37,6 @@ struct pfo_state {
    nir_def *depth_feedback_src;
 
    pco_fs_data *fs; /** Fragment-specific data. */
-
 };
 
 /** Per-vertex input pass state. */
