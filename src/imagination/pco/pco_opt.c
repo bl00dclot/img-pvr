@@ -457,12 +457,23 @@ static inline bool try_fwd_prop_instr(pco_instr **writes, pco_instr *instr)
           pixout_written_between(parent_instr, instr))
          continue;
 
+      /* XCLIPSE: a floor applies first (hardware order flr, abs, neg), so it
+       * cannot be put on a source that already has abs or neg: pco_ref_flr()
+       * would drop them (floor(-x) became floor(x)). Found by dEQP
+       * glsl.builtin.precision.{roundeven,modf,modfstruct}: 4 Pass -> Fail once
+       * the movs were propagated to a fixed point. */
+      if (psrc->flr &&
+          (parent_instr->src[0].abs || parent_instr->src[0].neg))
+         continue;
+
       /* Propagate the source. */
       pco_ref repl = parent_instr->src[0];
       if (psrc->flr)
          repl = pco_ref_flr(repl);
       else if (psrc->abs)
          repl = pco_ref_abs(repl);
+      if (psrc->flr && psrc->abs)
+         repl.abs = true;
 
       repl.neg ^= psrc->neg;
 
