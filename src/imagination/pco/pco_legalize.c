@@ -49,7 +49,7 @@ static inline bool ref_needs_olchk(pco_ref ref)
  *                       rather than S{0,2,3}.
  * \return True if progress was made.
  */
-static void insert_mov_ref(pco_instr *instr, pco_ref *ref, bool needs_s124)
+static void insert_mov_ref(pco_instr *instr, pco_ref *ref, bool needs_s124, bool is_dest)
 {
    if (instr->op == PCO_OP_MBYP && needs_s124 && !pco_ref_has_mods_set(*ref)) {
       instr->op = PCO_OP_MOVS1;
@@ -63,6 +63,36 @@ static void insert_mov_ref(pco_instr *instr, pco_ref *ref, bool needs_s124)
    pco_ref new_ref = pco_ref_new_ssa(instr->parent_func,
                                      pco_ref_get_bits(*ref),
                                      pco_ref_get_chans(*ref));
+
+   /* XCLIPSE: a destination needs its copy AFTER the instruction (new_ref -> *ref). It used to get the
+    * source treatment: the copy was put before the instruction and read the old value of the destination, so an
+    * instruction writing po0 through a backend destination (smp) lost its pixout write. */
+   if (is_dest) {
+      /* The scheduler already put the wdf of a backend result right behind it (pco_schedule runs before
+       * legalization): the copy must come after it, or it reads the result before it has arrived. */
+      pco_instr *after = instr;
+      for (pco_instr *n = pco_next_instr(after); n && n->op == PCO_OP_WDF; n = pco_next_instr(n))
+         after = n;
+
+      pco_builder bd =
+         pco_builder_create(instr->parent_func, pco_cursor_after_instr(after));
+
+      pco_ref orig = *ref;
+      pco_instr *mov_after = pco_mbyp(&bd,
+                                      orig,
+                                      new_ref,
+                                      .exec_cnd = pco_instr_get_exec_cnd(instr));
+
+      if (pco_instr_has_olchk(instr) && pco_instr_get_olchk(instr) &&
+          ref_needs_olchk(orig)) {
+         assert(pco_instr_has_olchk(mov_after));
+         pco_instr_set_olchk(mov_after, true);
+         pco_instr_set_olchk(instr, false);
+      }
+
+      *ref = new_ref;
+      return;
+   }
 
    pco_ref_xfer_mods(&new_ref, ref, true);
 
@@ -110,7 +140,7 @@ static bool try_legalize_src_mappings(pco_instr *instr,
       if (ref_src_map_valid(*pdest, mapped_src, &needs_s124))
          continue;
 
-      insert_mov_ref(instr, pdest, needs_s124);
+      insert_mov_ref(instr, pdest, needs_s124, true);
       progress = true;
    }
 
@@ -125,7 +155,7 @@ static bool try_legalize_src_mappings(pco_instr *instr,
       if (ref_src_map_valid(*psrc, mapped_src, &needs_s124))
          continue;
 
-      insert_mov_ref(instr, psrc, needs_s124);
+      insert_mov_ref(instr, psrc, needs_s124, false);
       progress = true;
    }
 

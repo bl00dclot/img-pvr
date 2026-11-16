@@ -44,6 +44,7 @@ static const struct debug_named_value pco_debug_options[] = {
    { "no_dma_cache", PCO_DEBUG_NO_DMA_CACHE, "Disable DMA cache." },
    { "no_fence", PCO_DEBUG_NO_FENCE, "XCLIPSE: emit no ditr fence (experiment)." },
    { "fence1", PCO_DEBUG_FENCE1, "XCLIPSE: ditr fence as one plain br.next (experiment)." },
+   { "fuse_all", PCO_DEBUG_FUSE_ALL, "XCLIPSE: let any producer be fused into a pixel output write (test for the backend-destination legalisation, tools/vktest/test_smp_po0.sh)." },
    DEBUG_NAMED_VALUE_END,
 };
 
