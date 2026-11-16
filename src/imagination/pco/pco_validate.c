@@ -344,6 +344,12 @@ static inline bool ref_is_in_map(pco_ref ref, enum pco_ref_map ref_maps)
             return true;
          break;
 
+      case PCO_REF_MAP_SHARED:
+         if ((pco_ref_is_reg(ref) || pco_ref_is_idx_reg(ref)) &&
+             pco_ref_get_reg_class(ref) == PCO_REG_CLASS_SHARED)
+            return true;
+         break;
+
       default:
          UNREACHABLE("");
       }
