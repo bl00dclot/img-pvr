@@ -388,6 +388,25 @@ int main(int argc, char **argv)
                                    .height = SIZE, .layers = 1 };
    VkFramebuffer fb;
    CHECK(vkCreateFramebuffer(dev, &fbi, NULL, &fb));
+   /* BENCH_FBS=<n>: the timed passes cycle over n framebuffers (n render targets, so n of the driver's RT datasets). */
+   VkFramebuffer fbs[8] = { fb };
+   int nfb = getenv("BENCH_FBS") ? atoi(getenv("BENCH_FBS")) : 1;
+   if (nfb < 1 || nfb > 8)
+      nfb = 1;
+   for (int k = 1; k < nfb; k++) {
+      VkImage rtk;
+      CHECK(vkCreateImage(dev, &rti, NULL, &rtk));
+      bind_image(rtk);
+      VkImageView vk_ = view_of(rtk, VK_FORMAT_R8G8B8A8_UNORM);
+      begin();
+      barrier(rtk, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, 0, 0,
+              VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT);
+      submit_wait();
+      VkFramebufferCreateInfo fbk = fbi;
+      fbk.pAttachments = &vk_;
+      CHECK(vkCreateFramebuffer(dev, &fbk, NULL, &fbs[k]));
+   }
+   unsigned pass_no = 0;
 
    VkShaderModuleCreateInfo vsi = { .sType = VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO,
                                     .codeSize = sizeof(spv_vert_vert), .pCode = spv_vert_vert };
@@ -405,8 +424,10 @@ int main(int argc, char **argv)
    VkPipelineVertexInputStateCreateInfo vis = { .sType = VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO };
    VkPipelineInputAssemblyStateCreateInfo ias = { .sType = VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO,
                                                   .topology = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST };
-   VkViewport vp = { 0, 0, SIZE, SIZE, 0, 1 };
-   VkRect2D sc = { { 0, 0 }, { SIZE, SIZE } };
+   /* BENCH_RA=<n>: render area, viewport and scissor n x n (a multiple of 32), the rest of the target untouched. */
+   const uint32_t ra = getenv("BENCH_RA") ? (uint32_t)atoi(getenv("BENCH_RA")) : SIZE;
+   VkViewport vp = { 0, 0, ra, ra, 0, 1 };
+   VkRect2D sc = { { 0, 0 }, { ra, ra } };
    VkPipelineViewportStateCreateInfo vps = { .sType = VK_STRUCTURE_TYPE_PIPELINE_VIEWPORT_STATE_CREATE_INFO,
                                              .viewportCount = 1, .pViewports = &vp, .scissorCount = 1,
                                              .pScissors = &sc };
@@ -531,6 +552,7 @@ int main(int argc, char **argv)
                                  .framebuffer = fb, .renderArea = sc, .clearValueCount = 1, .pClearValues = &cv };
 #define RECORD_PASS()                                                                    \
    do {                                                                                  \
+      rbi.framebuffer = fbs[pass_no++ % nfb];                                            \
       vkCmdBeginRenderPass(cb, &rbi, VK_SUBPASS_CONTENTS_INLINE);                        \
       vkCmdBindPipeline(cb, VK_PIPELINE_BIND_POINT_GRAPHICS, pipe);                      \
       vkCmdBindDescriptorSets(cb, VK_PIPELINE_BIND_POINT_GRAPHICS, pl, 0, 1, &set, 0, NULL); \
@@ -580,6 +602,7 @@ int main(int argc, char **argv)
       printf("submit vk %s %.4f ms/pass (vkQueueSubmit alone, CLOCK_MONOTONIC; the rest of the wall is the wait)\n", mode,
              ((ts.tv_sec - t0.tv_sec) * 1e3 + (ts.tv_nsec - t0.tv_nsec) / 1e6) / iterations);
    }
+   pass_no = 0;
    for (int it = wall ? iterations - 1 : 0; it < iterations; it++) {
       begin();
       RECORD_PASS();

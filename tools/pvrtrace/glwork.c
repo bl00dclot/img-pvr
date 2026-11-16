@@ -329,7 +329,15 @@ static int bench(int argc, char **argv)
    glUniform1i(glGetUniformLocation(p, "t"), 0);
    glActiveTexture(GL_TEXTURE0);
    glBindTexture(GL_TEXTURE_2D, tex);
-   glViewport(0, 0, BIG, BIG);
+   {
+      /* GLWORK_RA=<n>: viewport and scissor n x n (a multiple of 32). */
+      const int ra = getenv("GLWORK_RA") ? atoi(getenv("GLWORK_RA")) : BIG;
+      glViewport(0, 0, ra, ra);
+      if (ra != BIG) {
+         glEnable(GL_SCISSOR_TEST);
+         glScissor(0, 0, ra, ra);
+      }
+   }
    if (blend) {
       glEnable(GL_BLEND);
       glBlendFuncSeparate(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA, GL_ONE, GL_ZERO);
