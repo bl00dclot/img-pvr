@@ -1329,14 +1329,40 @@ static pco_instr *trans_load_buffer(trans_ctx *tctx,
    pco_ref addr_comps[2];
    pco_ref_new_ssa_addr_comps(tctx->func, addr_comps);
 
-   pco_add64_32(&tctx->b,
-                addr_comps[0],
-                addr_comps[1],
-                base_addr[0],
-                base_addr[1],
-                offset_src,
-                pco_ref_null(),
-                .s = true);
+   if (PCO_DEBUG(NO_IMADD_ADDR)) {
+      pco_add64_32(&tctx->b,
+                   addr_comps[0],
+                   addr_comps[1],
+                   base_addr[0],
+                   base_addr[1],
+                   offset_src,
+                   pco_ref_null(),
+                   .s = true);
+   } else {
+      /* XCLIPSE: address = a * b + base as one imadd64. The 64-bit addend may sit in shared registers (slots s2
+       * and s3), which add64_32's high word (slot s1) cannot: no copy of the high word. A constant offset K that
+       * is a product of two constant-register integers (0..31) needs no immediate either (the game's 124-byte
+       * block: every offset). */
+      pco_ref a = offset_src;
+      pco_ref b = pco_one;
+      if (nir_src_is_const(intr->src[1])) {
+         uint64_t k = nir_src_as_uint(intr->src[1]);
+         if (k == 0) {
+            a = pco_zero;
+         } else {
+            for (unsigned f = 1; f < 32; ++f) {
+               if (k % f == 0 && k / f < 32) {
+                  /* Constant registers sc0..sc31 hold the integers 0..31 (an imm operand is not mapped). */
+                  a = pco_ref_hwreg(k / f, PCO_REG_CLASS_CONST);
+                  b = pco_ref_hwreg(f, PCO_REG_CLASS_CONST);
+                  break;
+               }
+            }
+         }
+      }
+
+      pco_imadd64(&tctx->b, addr_comps[0], addr_comps[1], a, b, base_addr[0], base_addr[1], pco_ref_null());
+   }
 
    /* XCLIPSE: only dynamic buffers carry a dynamic offset (descriptor dword 3); for every other binding that
     * dword is zero, and its add64_32 is a group and two registers per read (game corpus, lean fs: 23 reads). */
