@@ -24,6 +24,13 @@
 // same without a VkPipelineCache (the driver's device cache and, if MESA_SHADER_CACHE_DIR is set, its disk cache).
 // The feedback only says "found" for a pipeline found in the application's VkPipelineCache (as the spec has it), not
 // for one served from the device or disk cache: there the vkCreateGraphicsPipelines time is the evidence.
+// CPU wall-time mode: BENCH_WALL=<ms> (e.g. 300) runs passes (one submit each) until the GED level reads 0 (680 MHz,
+// top), then <ms> more, capped at 5 s, then times the <iterations> passes recorded in ONE command buffer, one submit, one wait, with
+// CLOCK_MONOTONIC, then one more pass with the readback for the sum. Prints
+// "wall <mode> <ms>/pass freq <before> -> <after>": the GED clock samples (read-only, /sys/kernel/ged/hal/
+// current_freqency) taken just before and just after the timed block tag the result with its clock level.
+// Firmware job times are only valid inside one clock level (the kernel converts them with a stale clock
+// estimate); wall time is not affected. XCLIPSE: 680 MHz vk/gl ratios from this mode: see lanes/measure.md.
 // Prints the byte sum of the last iteration's image; it only has to be non-zero and repeatable.
 //
 // Build (armv7): $NDK/.../armv7a-linux-androideabi29-clang -O2 -Wall -Wextra -Werror
@@ -162,6 +169,31 @@ static void submit_wait(void)
    CHECK(vkResetFences(dev, 1, &fence));
    CHECK(vkQueueSubmit(queue, 1, &si, fence));
    CHECK(vkWaitForFences(dev, 1, &fence, VK_TRUE, 5000000000ull));
+}
+
+static double now_ms(void)
+{
+   struct timespec t;
+   clock_gettime(CLOCK_MONOTONIC, &t);
+   return t.tv_sec * 1e3 + t.tv_nsec / 1e6;
+}
+
+static double cpu_ms(void)
+{
+   struct timespec t;
+   clock_gettime(CLOCK_PROCESS_CPUTIME_ID, &t);
+   return t.tv_sec * 1e3 + t.tv_nsec / 1e6;
+}
+
+static void ged_freq(char *out, size_t n)
+{
+   FILE *f = fopen("/sys/kernel/ged/hal/current_freqency", "r");
+   out[0] = 0;
+   if (f) {
+      if (fgets(out, (int)n, f))
+         out[strcspn(out, "\n")] = 0;
+      fclose(f);
+   }
 }
 
 int main(int argc, char **argv)
@@ -491,16 +523,62 @@ int main(int argc, char **argv)
              "saved %zu bytes\n", n_pipes, n_hit, create_ms, sz);
 
    uint64_t sum = 0;
-   for (int it = 0; it < iterations; it++) {
+   const char *wall_env = getenv("BENCH_WALL");
+   const int wall = wall_env != NULL;
+   const int warmup = wall ? atoi(wall_env) : 0;
+   VkClearValue cv = { .color.float32 = { 0.0f, 0.0f, 0.0f, 1.0f } };
+   VkRenderPassBeginInfo rbi = { .sType = VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO, .renderPass = rp,
+                                 .framebuffer = fb, .renderArea = sc, .clearValueCount = 1, .pClearValues = &cv };
+#define RECORD_PASS()                                                                    \
+   do {                                                                                  \
+      vkCmdBeginRenderPass(cb, &rbi, VK_SUBPASS_CONTENTS_INLINE);                        \
+      vkCmdBindPipeline(cb, VK_PIPELINE_BIND_POINT_GRAPHICS, pipe);                      \
+      vkCmdBindDescriptorSets(cb, VK_PIPELINE_BIND_POINT_GRAPHICS, pl, 0, 1, &set, 0, NULL); \
+      vkCmdDraw(cb, 3, 1, 0, 0);                                                         \
+      vkCmdEndRenderPass(cb);                                                            \
+   } while (0)
+   if (wall) {
+      char f0[32], f1[32];
+      struct timespec t0, t1;
+      /* XCLIPSE: warm up on the clock, not the pass count: 400 passes (150 ms) left GED at 400/500 MHz. */
+      double start = now_ms(), top = 0;
+      int warm = 0;
+      for (;;) {
+         begin(); /* batches of 64: one pass per submit leaves the GPU mostly idle and GED stays low */
+         for (int k = 0; k < 64; k++)
+            RECORD_PASS();
+         submit_wait();
+         warm += 64;
+         double t = now_ms();
+         if (!top &&  t - start > 200) { /* a 0 read earlier is the previous process's */
+            ged_freq(f0, sizeof(f0));
+            if (!strncmp(f0, "0 ", 2))
+               top = t;
+         }
+         if ((top && t - top >= warmup) || t - start > 5000)
+            break;
+      }
       begin();
-      VkClearValue cv = { .color.float32 = { 0.0f, 0.0f, 0.0f, 1.0f } };
-      VkRenderPassBeginInfo rbi = { .sType = VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO, .renderPass = rp,
-                                    .framebuffer = fb, .renderArea = sc, .clearValueCount = 1, .pClearValues = &cv };
-      vkCmdBeginRenderPass(cb, &rbi, VK_SUBPASS_CONTENTS_INLINE);
-      vkCmdBindPipeline(cb, VK_PIPELINE_BIND_POINT_GRAPHICS, pipe);
-      vkCmdBindDescriptorSets(cb, VK_PIPELINE_BIND_POINT_GRAPHICS, pl, 0, 1, &set, 0, NULL);
-      vkCmdDraw(cb, 3, 1, 0, 0);
-      vkCmdEndRenderPass(cb);
+      for (int it = 0; it < iterations; it++)
+         RECORD_PASS();
+      CHECK(vkEndCommandBuffer(cb));
+      VkSubmitInfo si = { .sType = VK_STRUCTURE_TYPE_SUBMIT_INFO, .commandBufferCount = 1, .pCommandBuffers = &cb };
+      CHECK(vkResetFences(dev, 1, &fence));
+      ged_freq(f0, sizeof(f0));
+      const double c0 = cpu_ms();
+      clock_gettime(CLOCK_MONOTONIC, &t0);
+      CHECK(vkQueueSubmit(queue, 1, &si, fence));
+      CHECK(vkWaitForFences(dev, 1, &fence, VK_TRUE, 60000000000ull));
+      clock_gettime(CLOCK_MONOTONIC, &t1);
+      const double c1 = cpu_ms();
+      ged_freq(f1, sizeof(f1));
+      printf("wall vk %s %.4f ms/pass (%d passes, %d warm-up passes) freq %s -> %s, process cpu %.4f ms/pass\n", mode,
+             ((t1.tv_sec - t0.tv_sec) * 1e3 + (t1.tv_nsec - t0.tv_nsec) / 1e6) / iterations, iterations, warm,
+             f0, f1, (c1 - c0) / iterations);
+   }
+   for (int it = wall ? iterations - 1 : 0; it < iterations; it++) {
+      begin();
+      RECORD_PASS();
       if (it == iterations - 1) {
          VkBufferImageCopy r = { .imageSubresource = { VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1 },
                                  .imageExtent = { SIZE, SIZE, 1 } };
