@@ -263,8 +263,10 @@ static inline bool try_back_prop_instr(struct pco_use *uses, pco_instr *instr)
 
    if (pco_ref_is_reg(*pdest_from) &&
        pco_ref_get_reg_class(*pdest_from) == PCO_REG_CLASS_PIXOUT) {
-      return false;
-
+      /* XCLIPSE: enabled (was `return false;` from the import). The pixout
+       * write keeps its olchk: xfer_set_op_mods() moves the mov's olchk onto
+       * the producer (pck and the other ALU ops carry an olchk mod, which the
+       * group header encodes). */
       bool has_isp_fb = false;
 
       pco_foreach_instr_in_func_from_rev (rev_instr, use->instr) {

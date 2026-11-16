@@ -24,6 +24,7 @@
 #include "util/u_dynarray.h"
 
 #include <assert.h>
+#include <math.h>
 #include <stdbool.h>
 #include <stdio.h>
 
@@ -138,6 +139,45 @@ static unsigned format_chans_per_dword(enum pipe_format format)
    return desc->nr_channels;
 }
 
+/* XCLIPSE: fold pck.scale.u8888 of four constant channels at compile time, so a
+ * constant colour is one move instead of four moves and a pack (fill FS: 6
+ * instruction groups before, measured with pco_stats). Only the part of the
+ * hardware's rounding that is established is folded: inputs in [0, 1] whose
+ * scaled value is not a tie, plus the 0.5 -> 128 tie (127.5 rounds up; the
+ * vkbench fill pixel sum 133955584 is 511 per pixel = 64 + 128 + 191 + 128).
+ * Anything else (out of range, NaN, other ties, near-ties where the
+ * hardware's internal arithmetic could differ) stays a runtime pck. */
+static nir_def *try_fold_pack_u8888(nir_builder *b, nir_def *chans)
+{
+   if (chans->num_components != 4)
+      return NULL;
+
+   uint32_t packed = 0;
+   for (unsigned c = 0; c < 4; ++c) {
+      nir_scalar s = nir_scalar_resolved(chans, c);
+      if (!nir_scalar_is_const(s))
+         return NULL;
+
+      double x = nir_scalar_as_float(s);
+      if (!(x >= 0.0 && x <= 1.0))
+         return NULL;
+
+      double scaled = x * 255.0;
+      double frac = scaled - floor(scaled);
+      uint32_t v;
+      if (scaled == 127.5)
+         v = 128;
+      else if (fabs(frac - 0.5) < 1e-3)
+         return NULL;
+      else
+         v = (uint32_t)(scaled + 0.5);
+
+      packed |= v << (8 * c);
+   }
+
+   return nir_imm_int(b, packed);
+}
+
 static nir_def *pack_to_format(nir_builder *b,
                                nir_def *input,
                                nir_alu_type src_type,
@@ -200,7 +240,13 @@ static nir_def *pack_to_format(nir_builder *b,
 
       nir_def *input_chans =
          nir_channels(b, input, BITFIELD_RANGE(chans_packed, chans_to_pack));
-      packed_comps[u] = nir_pack_pco(b, input_chans, .format = format);
+      packed_comps[u] = NULL;
+      if ((format == PIPE_FORMAT_R8G8B8A8_UNORM ||
+           format == PIPE_FORMAT_B8G8R8A8_UNORM) &&
+          nir_alu_type_get_base_type(src_type) == nir_type_float)
+         packed_comps[u] = try_fold_pack_u8888(b, input_chans);
+      if (!packed_comps[u])
+         packed_comps[u] = nir_pack_pco(b, input_chans, .format = format);
 
       chans_remaining -= chans_to_pack;
    }
