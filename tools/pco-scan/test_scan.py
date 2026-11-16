@@ -32,6 +32,10 @@ def main():
                                  'wdf', 'pck', 'sngl'], names
     hits = s.scan_headers(b'\0' * 6 + raw + b'\0' * 6, 4)
     assert hits and hits[0][0] == 6, hits
+    # XCLIPSE: min_groups below 4 finds the short chains of small fragment shaders (the last 2 groups of ours)
+    tail = raw[-24:]
+    assert not s.scan_headers(b'\0' * 4 + tail, 4)
+    assert any(len(ch) == 2 for _, ch in s.scan_headers(b'\0' * 4 + tail, 2)), s.scan_headers(b'\0' * 4 + tail, 2)
     print('ok')
 
 

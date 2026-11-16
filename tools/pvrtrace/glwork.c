@@ -19,7 +19,10 @@
 #include <EGL/egl.h>
 #include <EGL/eglext.h>
 #include <GLES3/gl31.h>
+#include <fcntl.h>
 #include <stdio.h>
+#include <sys/stat.h>
+#include <unistd.h>
 #include <stdlib.h>
 #include <string.h>
 #include <time.h>
@@ -204,6 +207,50 @@ static void ged_freq(char *out, size_t n)
    }
 }
 
+/* XCLIPSE: GLWORK_DUMP_MEM=<dir>: after the first draw call (<dir>/draw) and after the passes (<dir>/done), write every readable non-file-backed mapping of this process
+ * to <dir>/<start>-<end>.bin. write() of an unreadable page fails with EFAULT instead of faulting, so device
+ * mappings are copied page by page and unreadable pages become zeros. The vendor driver compiles the fragment
+ * shader to USC code at draw time and the code lives in such a mapping; tools/pco-scan finds it. Output holds
+ * vendor code: local only. */
+static void dump_mem(const char *dir)
+{
+   FILE *m = fopen("/proc/self/maps", "r");
+   char line[512];
+   char mp[300];
+   snprintf(mp, sizeof(mp), "%s/maps.txt", dir);
+   FILE *mt = fopen(mp, "w");
+   static const char zero[4096];
+   while (m && fgets(line, sizeof(line), m)) {
+      unsigned long a, b;
+      char perm[8], path[256] = "";
+      if (mt)
+         fputs(line, mt);
+      if (sscanf(line, "%lx-%lx %7s %*s %*s %*s %255s", &a, &b, perm, path) < 3 || perm[0] != 'r')
+         continue;
+      if ((path[0] == '/' && strncmp(path, "/dev/", 5) != 0) || b - a > (64ul << 20) ||
+          !strncmp(path, "[stack", 6))
+         continue; /* keep anonymous, [heap] and /dev mappings */
+      char name[300];
+      snprintf(name, sizeof(name), "%s/%08lx-%08lx.bin", dir, a, b);
+      int fd = open(name, O_WRONLY | O_CREAT | O_TRUNC, 0644);
+      if (fd < 0)
+         continue;
+      unsigned bad = 0;
+      for (unsigned long x = a; x < b; x += 4096)
+         if (pwrite(fd, (const void *)x, 4096, (off_t)(x - a)) != 4096) {
+            (void)!pwrite(fd, zero, 4096, (off_t)(x - a));
+            bad++;
+         }
+      if (bad)
+         fprintf(stderr, "glwork: %s: %u unreadable pages\n", name, bad);
+      close(fd);
+   }
+   if (m)
+      fclose(m);
+   if (mt)
+      fclose(mt);
+}
+
 static int bench(int argc, char **argv)
 {
    static const struct {
@@ -334,7 +381,19 @@ static int bench(int argc, char **argv)
          if (!blend)
             glClear(GL_COLOR_BUFFER_BIT);
          glDrawArrays(GL_TRIANGLES, 0, 3);
+         if (it == 0 && getenv("GLWORK_DUMP_MEM")) { /* XCLIPSE: the fragment code is written at draw time, before the kick */
+            char sub[300];
+            snprintf(sub, sizeof(sub), "%s/draw", getenv("GLWORK_DUMP_MEM"));
+            mkdir(sub, 0755);
+            dump_mem(sub);
+         }
          glFinish();
+      }
+      if (getenv("GLWORK_DUMP_MEM")) {
+         char sub[300];
+         snprintf(sub, sizeof(sub), "%s/done", getenv("GLWORK_DUMP_MEM"));
+         mkdir(sub, 0755);
+         dump_mem(sub);
       }
    }
    const unsigned sum = readsum(GL_COLOR_ATTACHMENT0, BIG, BIG); /* before glGetError */
