@@ -156,9 +156,11 @@ enum pco_igrp_hdr_variant pco_igrp_hdr_variant(pco_igrp *igrp)
    return PCO_IGRP_HDR_MAIN;
 }
 
+/* XCLIPSE: non-fatal form, used by the late co-issue pass to test whether a pair fits. */
 static inline
-enum pco_src_variant pco_igrp_src_variant(const pco_igrp *igrp,
-                                          bool is_upper)
+bool pco_igrp_src_variant_fits(const pco_igrp *igrp,
+                               bool is_upper,
+                               enum pco_src_variant *out)
 {
    unsigned offset = is_upper ? ROGUE_ALU_INPUT_GROUP_SIZE : 0;
 
@@ -185,8 +187,10 @@ enum pco_src_variant pco_igrp_src_variant(const pco_igrp *igrp,
 
    bool is_ctrl = igrp->hdr.alutype == PCO_ALUTYPE_CONTROL;
    bool no_srcs_set = !sA_set && !sB_set && !sC_set && !mux_set;
-   if (is_ctrl && no_srcs_set)
-      return PCO_SRC_NONE;
+   if (is_ctrl && no_srcs_set) {
+      *out = PCO_SRC_NONE;
+      return true;
+   }
 
 % for variant, spec in [(bs.name.upper(), bs.data) for bs in I_SRC.bit_structs.values()]:
    ${'else ' if not loop.first else ''}if (${'!' if not spec.is_upper else ''}is_upper &&
@@ -194,9 +198,21 @@ enum pco_src_variant pco_igrp_src_variant(const pco_igrp *igrp,
             sbB_bits ${'==' if spec.sbB_bits == -1 else '<='} ${spec.sbB_bits} && sB_bits ${'==' if spec.sB_bits == -1 else '<='} ${spec.sB_bits} &&
             sbC_bits ${'==' if spec.sbC_bits == -1 else '<='} ${spec.sbC_bits} && sC_bits ${'==' if spec.sC_bits == -1 else '<='} ${spec.sC_bits} &&
             mux_bits ${'==' if spec.mux_bits == -1 else '<='} ${spec.mux_bits}) {
-      return ${variant};
+      *out = ${variant};
+      return true;
    }
 % endfor
+
+   return false;
+}
+
+static inline
+enum pco_src_variant pco_igrp_src_variant(const pco_igrp *igrp,
+                                          bool is_upper)
+{
+   enum pco_src_variant variant;
+   if (pco_igrp_src_variant_fits(igrp, is_upper, &variant))
+      return variant;
 
    UNREACHABLE("");
 }
@@ -211,7 +227,7 @@ enum pco_iss_variant pco_igrp_iss_variant(const pco_igrp *igrp)
 }
 
 static inline
-enum pco_dst_variant pco_igrp_dest_variant(pco_igrp *igrp)
+bool pco_igrp_dest_variant_fits(pco_igrp *igrp, enum pco_dst_variant *out)
 {
    pco_ref w0 = igrp->dests.w[0];
    pco_ref w1 = igrp->dests.w[1];
@@ -223,8 +239,10 @@ enum pco_dst_variant pco_igrp_dest_variant(pco_igrp *igrp)
    bool one_dest = w0_set != w1_set;
    bool dual_dsts = w0_set && w1_set;
 
-   if (no_dsts)
-      return PCO_DST_NONE;
+   if (no_dsts) {
+      *out = PCO_DST_NONE;
+      return true;
+   }
 
    int db0_bits = w0_set ? pco_map_reg_bank_bits(w0) : -1;
    int d0_bits = w0_set ? pco_map_reg_index_bits(w0) : -1;
@@ -247,9 +265,20 @@ enum pco_dst_variant pco_igrp_dest_variant(pco_igrp *igrp)
    ${'else ' if not loop.first else ''}if (${'!' if not spec.dual_dsts else ''}dual_dsts &&
         db0_bits ${'==' if spec.db0_bits == -1 else '<='} ${spec.db0_bits} && d0_bits ${'==' if spec.d0_bits == -1 else '<='} ${spec.d0_bits} &&
         db1_bits ${'==' if spec.db1_bits == -1 else '<='} ${spec.db1_bits} && d1_bits ${'==' if spec.d1_bits == -1 else '<='} ${spec.d1_bits}) {
-      return ${variant};
+      *out = ${variant};
+      return true;
    }
 % endfor
+
+   return false;
+}
+
+static inline
+enum pco_dst_variant pco_igrp_dest_variant(pco_igrp *igrp)
+{
+   enum pco_dst_variant variant;
+   if (pco_igrp_dest_variant_fits(igrp, &variant))
+      return variant;
 
    UNREACHABLE("");
 }

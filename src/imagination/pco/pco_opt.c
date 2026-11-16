@@ -12,6 +12,7 @@
 
 #include "pco.h"
 #include "pco_builder.h"
+#include "pco_internal.h"
 #include "util/bitscan.h"
 #include "util/bitset.h"
 #include "util/macros.h"
@@ -602,7 +603,7 @@ bool pco_opt(pco_shader *shader)
       fwd_progress = false;
       PCO_PASS(fwd_progress, shader, pco_opt_fwd_prop);
       progress |= fwd_progress;
-   } while (fwd_progress);
+   } while (fwd_progress && !PCO_DEBUG(NO_FWDFIX));
    /* TODO: Track whether there are any comp instructions referencing hw
     * registers resulting from the previous passes, and only run
     * pco_opt_prop_hw_comps if this is the case.
