@@ -407,6 +407,8 @@ int main(int argc, char **argv)
       CHECK(vkCreateFramebuffer(dev, &fbk, NULL, &fbs[k]));
    }
    unsigned pass_no = 0;
+   /* BENCH_NODRAW=1: render passes without a draw (clear only), the case the driver's dummy object exists for. */
+   const int nodraw = getenv("BENCH_NODRAW") != NULL;
 
    VkShaderModuleCreateInfo vsi = { .sType = VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO,
                                     .codeSize = sizeof(spv_vert_vert), .pCode = spv_vert_vert };
@@ -556,7 +558,8 @@ int main(int argc, char **argv)
       vkCmdBeginRenderPass(cb, &rbi, VK_SUBPASS_CONTENTS_INLINE);                        \
       vkCmdBindPipeline(cb, VK_PIPELINE_BIND_POINT_GRAPHICS, pipe);                      \
       vkCmdBindDescriptorSets(cb, VK_PIPELINE_BIND_POINT_GRAPHICS, pl, 0, 1, &set, 0, NULL); \
-      vkCmdDraw(cb, 3, 1, 0, 0);                                                         \
+      if (!nodraw)                                                                       \
+         vkCmdDraw(cb, 3, 1, 0, 0);                                                      \
       vkCmdEndRenderPass(cb);                                                            \
    } while (0)
    if (wall) {
