@@ -46,6 +46,9 @@ static const struct debug_named_value pco_debug_options[] = {
    { "fence1", PCO_DEBUG_FENCE1, "XCLIPSE: ditr fence as one plain br.next (experiment)." },
    { "no_coissue", PCO_DEBUG_NO_COISSUE, "XCLIPSE: do not pair independent main-ALU ops in one group (A/B)." },
    { "no_fwdfix", PCO_DEBUG_NO_FWDFIX, "XCLIPSE: one forward-propagation round only, as before (A/B)." },
+   { "fuse_all", PCO_DEBUG_FUSE_ALL, "XCLIPSE: let any producer be fused into a pixel output write (test for the backend-destination legalisation, tools/vktest/test_smp_po0.sh)." },
+   { "no_itrsmp", PCO_DEBUG_NO_ITRSMP, "XCLIPSE: no fused iterate-and-sample (itrsmp): ditr, fence and smp as before." },
+   { "no_schedwdf", PCO_DEBUG_NO_SCHEDWDF, "XCLIPSE: itrsmp followed by a wdf group instead of its own sched = wdf." },
    DEBUG_NAMED_VALUE_END,
 };
 

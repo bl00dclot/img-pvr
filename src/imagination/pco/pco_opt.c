@@ -271,9 +271,10 @@ static inline bool try_back_prop_instr(struct pco_use *uses, pco_instr *instr)
        * Only pck and movi32 (a folded constant colour): dEQP renderpass 1/5 failed 47 cases with every producer
        * allowed, because the load-op/transfer shaders' smp (a backend op whose
        * result must land in a temp) was fused into po0 and legalization then
-       * dropped the pixout write. Other ALU producers are not needed for the
-       * groups gained here. */
-      if (instr->op != PCO_OP_PCK && instr->op != PCO_OP_MOVI32)
+       * dropped the pixout write. That is fixed in the legalizer (insert_mov_ref(), a backend
+       * destination gets its copy after the instruction); the restriction stays because other producers
+       * gain no group here. PCO_DEBUG=fuse_all lifts it (tools/vktest/test_smp_po0.sh). */
+      if (!PCO_DEBUG(FUSE_ALL) && instr->op != PCO_OP_PCK && instr->op != PCO_OP_MOVI32)
          return false;
 
       bool has_isp_fb = false;
