@@ -2809,6 +2809,10 @@ static void pvr_init_descriptors(pco_data *data,
 
          binding_data->is_inline_ubo = layout_binding->type ==
                                        VK_DESCRIPTOR_TYPE_INLINE_UNIFORM_BLOCK;
+
+         binding_data->is_dynamic_buffer =
+            layout_binding->type == VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER_DYNAMIC ||
+            layout_binding->type == VK_DESCRIPTOR_TYPE_STORAGE_BUFFER_DYNAMIC;
       }
    }
 }

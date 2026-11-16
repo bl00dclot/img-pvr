@@ -181,6 +181,10 @@ typedef struct _pco_binding_data {
 
    /** Whether the descriptor binding is an inline uniform block. */
    bool is_inline_ubo;
+
+   /** XCLIPSE: whether the binding is a dynamic uniform/storage buffer. The fourth dword of every other buffer
+    * descriptor (the dynamic offset) is always zero, so reads of those skip adding it. */
+   bool is_dynamic_buffer;
 } pco_binding_data;
 
 /** PCO descriptor set data. */

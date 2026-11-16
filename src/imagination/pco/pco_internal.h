@@ -77,6 +77,8 @@ enum pco_debug {
    PCO_DEBUG_FUSE_ALL = BITFIELD64_BIT(13),
    PCO_DEBUG_NO_ITRSMP = BITFIELD64_BIT(14),
    PCO_DEBUG_NO_SCHEDWDF = BITFIELD64_BIT(15),
+   PCO_DEBUG_NO_IMADD_ADDR = BITFIELD64_BIT(16),
+   PCO_DEBUG_NO_VREG_COALESCE = BITFIELD64_BIT(17),
 };
 
 extern uint64_t pco_debug;
@@ -1818,6 +1820,7 @@ bool pco_end(pco_shader *shader);
 bool pco_group_instrs(pco_shader *shader);
 bool pco_index(pco_shader *shader, bool skip_ssa);
 bool pco_opt_comp_only_vecs(pco_shader *shader);
+bool pco_opt_coalesce_vreg_stores(pco_shader *shader);
 bool pco_nir_compute_instance_check(nir_shader *shader);
 bool pco_nir_link_clip_cull_vars(nir_shader *producer, nir_shader *consumer);
 bool pco_nir_link_multiview(nir_shader *producer,

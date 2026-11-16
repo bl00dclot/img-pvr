@@ -12,6 +12,7 @@ bench/td      bench:vert.vert  bench:td.frag
 bench/tf      bench:vert.vert  bench:tf.frag
 bench/tv      bench:vert.vert  bench:tv.frag
 bench/tvm     bench:vert.vert  bench:tvm.frag
+bench/ubo     bench:vert.vert  bench:ubo.frag
 probe/t1      probe:fs.vert    probe:t1.frag    -b
 probe/t1nb    probe:fs.vert    probe:t1.frag
 probe/t2      probe:t2.vert    probe:t2.frag

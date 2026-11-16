@@ -49,6 +49,8 @@ static const struct debug_named_value pco_debug_options[] = {
    { "fuse_all", PCO_DEBUG_FUSE_ALL, "XCLIPSE: let any producer be fused into a pixel output write (test for the backend-destination legalisation, tools/vktest/test_smp_po0.sh)." },
    { "no_itrsmp", PCO_DEBUG_NO_ITRSMP, "XCLIPSE: no fused iterate-and-sample (itrsmp): ditr, fence and smp as before." },
    { "no_schedwdf", PCO_DEBUG_NO_SCHEDWDF, "XCLIPSE: itrsmp followed by a wdf group instead of its own sched = wdf." },
+   { "no_imadd_addr", PCO_DEBUG_NO_IMADD_ADDR, "XCLIPSE: buffer read address as add64_32 (not one imadd64)." },
+   { "no_vreg_coalesce", PCO_DEBUG_NO_VREG_COALESCE, "XCLIPSE: keep the copy into a phi register after its producer." },
    DEBUG_NAMED_VALUE_END,
 };
 

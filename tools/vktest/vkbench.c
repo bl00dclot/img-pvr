@@ -13,6 +13,7 @@
 //   disc   tv with discard on alpha            alu    64 dependent fract/fma steps, highp
 //   alum   the same in mediump                 tvm    tv into a mediump result
 //   blend  fill blended (alpha 0.5) over the previous contents, loaded at the start of the pass
+//   ubo    tv plus 12 flag-controlled branches reading 28 scalar uniforms from one UBO (set 0 binding 1)
 //   load   fill, no blending, previous contents loaded   blendc  blend over a cleared target
 //
 // Pipeline cache test: with VKBENCH_CACHE=<file> the pipelines are created through a VkPipelineCache
@@ -89,7 +90,7 @@ static const struct {
    size_t size;
 } frags[] = {
 #define F(n) { #n, spv_##n##_frag, sizeof(spv_##n##_frag) }
-   F(fill), F(tv), F(tf), F(td), F(c1), F(c2), F(fetch), F(disc), F(alu), F(alum), F(tvm),
+   F(fill), F(tv), F(tf), F(td), F(c1), F(c2), F(fetch), F(disc), F(alu), F(alum), F(tvm), F(ubo),
 #undef F
 };
 
@@ -326,15 +327,19 @@ int main(int argc, char **argv)
                                .addressModeW = VK_SAMPLER_ADDRESS_MODE_REPEAT, .maxLod = 0 };
    VkSampler sampler;
    CHECK(vkCreateSampler(dev, &sci, NULL, &sampler));
-   VkDescriptorSetLayoutBinding dlb = { 0, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1,
-                                        VK_SHADER_STAGE_FRAGMENT_BIT, NULL };
+   const int ubo = !strcmp(mode, "ubo");
+   VkDescriptorSetLayoutBinding dlb[2] = { { 0, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1,
+                                             VK_SHADER_STAGE_FRAGMENT_BIT, NULL },
+                                           { 1, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 1,
+                                             VK_SHADER_STAGE_FRAGMENT_BIT, NULL } };
    VkDescriptorSetLayoutCreateInfo dli = { .sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO,
-                                           .bindingCount = 1, .pBindings = &dlb };
+                                           .bindingCount = ubo ? 2 : 1, .pBindings = dlb };
    VkDescriptorSetLayout dsl;
    CHECK(vkCreateDescriptorSetLayout(dev, &dli, NULL, &dsl));
-   VkDescriptorPoolSize ps = { VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1 };
+   VkDescriptorPoolSize ps[2] = { { VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1 },
+                                  { VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 1 } };
    VkDescriptorPoolCreateInfo dpi = { .sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO, .maxSets = 1,
-                                      .poolSizeCount = 1, .pPoolSizes = &ps };
+                                      .poolSizeCount = ubo ? 2 : 1, .pPoolSizes = ps };
    VkDescriptorPool dpool;
    CHECK(vkCreateDescriptorPool(dev, &dpi, NULL, &dpool));
    VkDescriptorSetAllocateInfo dai = { .sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO,
@@ -345,7 +350,24 @@ int main(int argc, char **argv)
    VkWriteDescriptorSet wds = { .sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, .dstSet = set,
                                 .descriptorCount = 1, .descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
                                 .pImageInfo = &dii };
-   vkUpdateDescriptorSets(dev, 1, &wds, 0, NULL);
+   if (ubo) {
+      /* 8 vec4, 8 ivec4 (alternating flags), 16 floats at a 16-byte stride (std140). */
+      VkBuffer ub;
+      float *u = host_buffer(sizeof(float) * 4 * 32, VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT, &ub);
+      for (unsigned i = 0; i < 32 * 4; i++)
+         u[i] = 0.05f + 0.03f * (float)(i % 11);
+      int32_t *m = (int32_t *)u + 8 * 4;
+      for (unsigned i = 0; i < 8 * 4; i++)
+         m[i] = ((i * 7u + 3u) % 5u) != 0;
+      VkDescriptorBufferInfo dbi = { ub, 0, VK_WHOLE_SIZE };
+      VkWriteDescriptorSet wds2[2] = { wds, { .sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, .dstSet = set,
+                                               .dstBinding = 1, .descriptorCount = 1,
+                                               .descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,
+                                               .pBufferInfo = &dbi } };
+      vkUpdateDescriptorSets(dev, 2, wds2, 0, NULL);
+   } else {
+      vkUpdateDescriptorSets(dev, 1, &wds, 0, NULL);
+   }
 
    /* Target and readback. The blend mode loads the previous contents; the others clear. */
    VkImageCreateInfo rti = tii;
