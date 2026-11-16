@@ -568,6 +568,8 @@ int main(int argc, char **argv)
       const double c0 = cpu_ms();
       clock_gettime(CLOCK_MONOTONIC, &t0);
       CHECK(vkQueueSubmit(queue, 1, &si, fence));
+      struct timespec ts;
+      clock_gettime(CLOCK_MONOTONIC, &ts);
       CHECK(vkWaitForFences(dev, 1, &fence, VK_TRUE, 60000000000ull));
       clock_gettime(CLOCK_MONOTONIC, &t1);
       const double c1 = cpu_ms();
@@ -575,6 +577,8 @@ int main(int argc, char **argv)
       printf("wall vk %s %.4f ms/pass (%d passes, %d warm-up passes) freq %s -> %s, process cpu %.4f ms/pass\n", mode,
              ((t1.tv_sec - t0.tv_sec) * 1e3 + (t1.tv_nsec - t0.tv_nsec) / 1e6) / iterations, iterations, warm,
              f0, f1, (c1 - c0) / iterations);
+      printf("submit vk %s %.4f ms/pass (vkQueueSubmit alone, CLOCK_MONOTONIC; the rest of the wall is the wait)\n", mode,
+             ((ts.tv_sec - t0.tv_sec) * 1e3 + (ts.tv_nsec - t0.tv_nsec) / 1e6) / iterations);
    }
    for (int it = wall ? iterations - 1 : 0; it < iterations; it++) {
       begin();
