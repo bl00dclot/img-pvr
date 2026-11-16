@@ -3067,23 +3067,6 @@ pvr_preprocess_shader_data(pco_data *data,
          data->fs.meta_static = fs_meta;
       }
 
-      /* XCLIPSE: A/B experiment (lanes/disc.md), off unless PVR_DISC_SELECT is set: discard by
-       * selecting the previous framebuffer value (translucent pass) in pipelines without a
-       * depth/stencil attachment. Not safe with an occlusion query: those count discarded fragments. */
-      if (getenv("PVR_DISC_SELECT")) {
-         bool has_ds;
-         if (pGraphicsCreateInfo->renderPass) {
-            VK_FROM_HANDLE(pvr_render_pass, pass, pGraphicsCreateInfo->renderPass);
-            has_ds = pass->subpasses[pGraphicsCreateInfo->subpass]
-                        .depth_stencil_attachment != VK_ATTACHMENT_UNUSED;
-         } else {
-            has_ds = state->rp && (state->rp->attachments &
-                                   (MESA_VK_RP_ATTACHMENT_DEPTH_BIT |
-                                    MESA_VK_RP_ATTACHMENT_STENCIL_BIT));
-         }
-         data->fs.discard_select = !has_ds;
-      }
-
       /* TODO: push consts, dynamic state, etc. */
       break;
    }
