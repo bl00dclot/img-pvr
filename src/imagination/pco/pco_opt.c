@@ -263,7 +263,17 @@ static inline bool try_back_prop_instr(struct pco_use *uses, pco_instr *instr)
 
    if (pco_ref_is_reg(*pdest_from) &&
        pco_ref_get_reg_class(*pdest_from) == PCO_REG_CLASS_PIXOUT) {
-      return false;
+      /* XCLIPSE: enabled (was `return false;` from the import). The pixout
+       * write keeps its olchk: xfer_set_op_mods() moves the mov's olchk onto
+       * the producer (pck carries an olchk mod, which the group header
+       * encodes).
+       * Only pck and movi32 (a folded constant colour): dEQP renderpass 1/5 failed 47 cases with every producer
+       * allowed, because the load-op/transfer shaders' smp (a backend op whose
+       * result must land in a temp) was fused into po0 and legalization then
+       * dropped the pixout write. Other ALU producers are not needed for the
+       * groups gained here. */
+      if (instr->op != PCO_OP_PCK && instr->op != PCO_OP_MOVI32)
+         return false;
 
       bool has_isp_fb = false;
 
