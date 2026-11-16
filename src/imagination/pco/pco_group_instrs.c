@@ -205,7 +205,7 @@ static void pco_instr_to_igrp(pco_builder *b,
 
 #define PCO_COISSUE_WINDOW 6
 
-static inline bool coissue_ref_ok(pco_ref ref, bool is_dest)
+static inline bool coissue_ref_ok(pco_ref ref, bool is_dest, bool is_p1)
 {
    if (!pco_ref_is_hwreg(ref) || pco_ref_get_chans(ref) != 1 ||
        pco_ref_get_bits(ref) != 32)
@@ -215,8 +215,15 @@ static inline bool coissue_ref_ok(pco_ref ref, bool is_dest)
    case PCO_REG_CLASS_TEMP:
       return true;
 
-   case PCO_REG_CLASS_VTXIN:
    case PCO_REG_CLASS_COEFF:
+      /* XCLIPSE: not as a phase 1 (S3-S5) source. Bisected on the device with a
+       * pair counter: dEQP-VK draw.*.linear_interpolation.* fail (3 of 3 runs)
+       * with a pair that reads cf5/cf6 as S3/S5, and pass with every other pair
+       * formed. The upper source group's coefficient bank encoding is not
+       * established, so only S0-S2 take coefficients. */
+      return !is_dest && !is_p1;
+
+   case PCO_REG_CLASS_VTXIN:
    case PCO_REG_CLASS_SHARED:
    case PCO_REG_CLASS_CONST:
       return !is_dest;
@@ -227,7 +234,7 @@ static inline bool coissue_ref_ok(pco_ref ref, bool is_dest)
 }
 
 /** Whether an instruction is a plain main-ALU op with no modifiers that need the group header. */
-static inline bool coissue_instr_ok(const pco_instr *instr, bool allow_end)
+static inline bool coissue_instr_ok(const pco_instr *instr, bool allow_end, bool is_p1)
 {
    switch (instr->op) {
    case PCO_OP_FMAD:
@@ -252,11 +259,11 @@ static inline bool coissue_instr_ok(const pco_instr *instr, bool allow_end)
    if (!allow_end && pco_instr_has_end(instr) && pco_instr_get_end(instr))
       return false;
 
-   if (instr->num_dests != 1 || !coissue_ref_ok(instr->dest[0], true))
+   if (instr->num_dests != 1 || !coissue_ref_ok(instr->dest[0], true, is_p1))
       return false;
 
    for (unsigned s = 0; s < instr->num_srcs; ++s)
-      if (!coissue_ref_ok(instr->src[s], false))
+      if (!coissue_ref_ok(instr->src[s], false, is_p1))
          return false;
 
    return true;
@@ -375,7 +382,7 @@ static bool coissue_encodable(const pco_instr *i, const pco_instr *j)
 
 static pco_instr *coissue_find_mate(pco_block *block, pco_instr *i)
 {
-   if (!coissue_instr_ok(i, false))
+   if (!coissue_instr_ok(i, false, false))
       return NULL;
 
    unsigned n = 0;
@@ -386,7 +393,7 @@ static pco_instr *coissue_find_mate(pco_block *block, pco_instr *i)
 
       /* The end flag may only sit on a group that stays last. */
       bool adjacent = pos == i->link.next;
-      if (coissue_instr_ok(j, adjacent) &&
+      if (coissue_instr_ok(j, adjacent, true) &&
           !coissue_writes_read(i, j) && !coissue_writes_write(i, j) &&
           coissue_can_move_across(block, i, j) && coissue_encodable(i, j))
          return j;
