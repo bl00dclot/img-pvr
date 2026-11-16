@@ -45,7 +45,7 @@ static const struct debug_named_value pco_debug_options[] = {
    { "no_fence", PCO_DEBUG_NO_FENCE, "XCLIPSE: emit no ditr fence (experiment)." },
    { "fence1", PCO_DEBUG_FENCE1, "XCLIPSE: ditr fence as one plain br.next (experiment)." },
    { "fuse_all", PCO_DEBUG_FUSE_ALL, "XCLIPSE: let any producer be fused into a pixel output write (test for the backend-destination legalisation, tools/vktest/test_smp_po0.sh)." },
-   { "itrsmp", PCO_DEBUG_ITRSMP, "XCLIPSE: fuse iterate and sample into itrsmp where the coordinate is exactly an interpolated input (experiment)." },
+   { "no_itrsmp", PCO_DEBUG_NO_ITRSMP, "XCLIPSE: no fused iterate-and-sample (itrsmp): ditr, fence and smp as before." },
    DEBUG_NAMED_VALUE_END,
 };
 

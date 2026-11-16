@@ -522,7 +522,7 @@ static bool itrsmp_fusable_smp(trans_ctx *tctx,
                                nir_intrinsic_instr *load,
                                struct itrsmp_info *info)
 {
-   if (!PCO_DEBUG(ITRSMP) || tctx->stage != MESA_SHADER_FRAGMENT)
+   if (PCO_DEBUG(NO_ITRSMP) || tctx->stage != MESA_SHADER_FRAGMENT)
       return false;
 
    pco_smp_flags f = { ._ = nir_intrinsic_smp_flags_pco(smp) };
