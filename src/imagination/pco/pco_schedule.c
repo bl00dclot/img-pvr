@@ -33,6 +33,14 @@ bool pco_schedule(pco_shader *shader)
          if (instr->op == PCO_OP_WDF || instr->op == PCO_OP_IDF)
             continue;
 
+         /* XCLIPSE: itrsmp carries its own data fence (sched = wdf, as the vendor's does) instead of a wdf
+          * group behind it. */
+         if (instr->op == PCO_OP_ITRSMP && !PCO_DEBUG(NO_SCHEDWDF)) {
+            pco_instr_set_sched(instr, PCO_SCHED_WDF);
+            progress = true;
+            continue;
+         }
+
          pco_foreach_instr_src (psrc, instr) {
             if (!pco_ref_is_drc(*psrc))
                continue;
