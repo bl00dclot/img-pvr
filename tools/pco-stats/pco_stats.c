@@ -377,7 +377,7 @@ static void pvr_alloc_fs_varyings(pco_data *data, nir_shader *nir)
 /* ---- end of copied code ---- */
 
 #define MAX_SETS 4
-#define MAX_BINDINGS 8
+#define MAX_BINDINGS 16
 
 /* Descriptor layout, derived from the shaders' variables (the driver gets it from the set layouts). */
 struct bind_info {
@@ -436,14 +436,14 @@ static void layout_finish(struct layout *l)
          }
 }
 
-static void init_descriptors(pco_data *data, nir_shader *nir, const struct layout *l)
+static void init_descriptors(void *mem_ctx, pco_data *data, nir_shader *nir, const struct layout *l)
 {
    for (unsigned s = 0; s < l->set_count; s++) {
       if (!(BITFIELD_BIT(nir->info.stage) & l->set_stages[s]))
          continue;
       pco_descriptor_set_data *d = &data->common.desc_sets[s];
       d->binding_count = MAX_BINDINGS;
-      d->bindings = rzalloc_array_size(NULL, sizeof(*d->bindings), MAX_BINDINGS);
+      d->bindings = rzalloc_array_size(mem_ctx, sizeof(*d->bindings), MAX_BINDINGS);
       for (unsigned b = 0; b < MAX_BINDINGS; b++)
          d->bindings[b].is_img_smp = l->b[s][b].img_smp;
    }
@@ -559,6 +559,19 @@ static nir_shader *load(const char *path, mesa_shader_stage stage, void *mem_ctx
    return nir;
 }
 
+/* pvr_init_vs_attribs(): the vertex input state's formats. Here: every input fetched as 32 bits per component of the
+ * type the shader declares (float/uint/int, 1 to 4 components), the usual layout of a port's vertex buffers. */
+static enum pipe_format attrib_format(const struct glsl_type *t)
+{
+   static const enum pipe_format f[3][4] = {
+      { PIPE_FORMAT_R32_FLOAT, PIPE_FORMAT_R32G32_FLOAT, PIPE_FORMAT_R32G32B32_FLOAT, PIPE_FORMAT_R32G32B32A32_FLOAT },
+      { PIPE_FORMAT_R32_UINT, PIPE_FORMAT_R32G32_UINT, PIPE_FORMAT_R32G32B32_UINT, PIPE_FORMAT_R32G32B32A32_UINT },
+      { PIPE_FORMAT_R32_SINT, PIPE_FORMAT_R32G32_SINT, PIPE_FORMAT_R32G32B32_SINT, PIPE_FORMAT_R32G32B32A32_SINT },
+   };
+   unsigned k = glsl_type_is_integer(t) ? (glsl_get_base_type(t) == GLSL_TYPE_UINT ? 1 : 2) : 0;
+   return f[k][glsl_get_vector_elements(t) - 1];
+}
+
 /* Output formats the harness knows (colour attachment 0), and the size of its output register block. */
 static const struct {
    const char *name;
@@ -610,6 +623,7 @@ int main(int argc, char **argv)
 {
    unsigned fmt = 0;
    bool robust = false, dump = false, blend = false;
+   unsigned nrt = 1;
    int i = 1;
    for (; i < argc && argv[i][0] == '-' && argv[i][1]; i++) {
       if (!strcmp(argv[i], "-f") && i + 1 < argc) {
@@ -622,6 +636,10 @@ int main(int argc, char **argv)
          robust = true;
       } else if (!strcmp(argv[i], "-b")) {
          blend = true;
+      } else if (!strcmp(argv[i], "-n") && i + 1 < argc) {
+         nrt = atoi(argv[++i]);
+         if (nrt < 1 || nrt > 4)
+            goto usage;
       } else if (!strcmp(argv[i], "-d")) {
          dump = true;
       } else {
@@ -631,8 +649,8 @@ int main(int argc, char **argv)
    if (argc - i != 2 && argc - i != 3) {
 usage:
       fprintf(stderr,
-              "usage: pco_stats [-f rgba8|rgba16f|rgba32f] [-b] [-r] [-d] <name> <vs.spv|-> <fs.spv>\n"
-              "  one line per shader on stdout; -b src-alpha/one-minus-src-alpha blend on attachment 0, -r robustBufferAccess, -d also print the IR to stderr\n");
+              "usage: pco_stats [-f rgba8|rgba16f|rgba32f] [-b] [-n rts] [-r] [-d] <name> <vs.spv|-> <fs.spv>\n"
+              "  one line per shader on stdout; -b src-alpha/one-minus-src-alpha blend on every attachment, -n number of identical colour attachments (1..4), -r robustBufferAccess, -d also print the IR to stderr\n");
       return 1;
    }
    const char *name = argv[i], *vs_path = argv[i + 1], *fs_path = argv[i + 2];
@@ -684,9 +702,7 @@ usage:
        * no dynamic state, no pSampleMask, no colour write enables. */
       if (s == MESA_SHADER_FRAGMENT) {
          pco_fs_data *f = &d->fs;
-         f->output_formats[FRAG_RESULT_DATA0] = formats[fmt].fmt;
          f->z_replicate = ~0u;
-         f->blend_opts.rt[0].format = formats[fmt].fmt;
          const nir_lower_blend_channel replace = {
             .func = PIPE_BLEND_ADD,
             .src_factor = PIPE_BLENDFACTOR_ONE,
@@ -697,16 +713,24 @@ usage:
             .src_factor = PIPE_BLENDFACTOR_SRC_ALPHA,
             .dst_factor = PIPE_BLENDFACTOR_INV_SRC_ALPHA,
          };
-         f->blend_opts.rt[0].rgb = blend ? over : replace;
-         f->blend_opts.rt[0].alpha = blend ? over : replace;
-         f->blend_opts.rt[0].colormask = 0xf;
+         /* nrt identical attachments (-n), each with the same blend state. */
+         for (unsigned rt = 0; rt < nrt; rt++) {
+            f->output_formats[FRAG_RESULT_DATA0 + rt] = formats[fmt].fmt;
+            f->blend_opts.rt[rt].format = formats[fmt].fmt;
+            f->blend_opts.rt[rt].rgb = blend ? over : replace;
+            f->blend_opts.rt[rt].alpha = blend ? over : replace;
+            f->blend_opts.rt[rt].colormask = 0xf;
+         }
          f->uses.alpha_to_coverage = false;
 
          f->meta_is_static = true;
          f->meta_static = (BITFIELD_MASK(PVR_FS_META_SAMPLE_MASK_LENGTH) << PVR_FS_META_SAMPLE_MASK_OFFSET) |
                           (BITFIELD_MASK(PVR_FS_META_COLOR_WRITE_ENABLE_LENGTH) << PVR_FS_META_COLOR_WRITE_ENABLE_OFFSET);
       }
-      init_descriptors(d, nir, &layout);
+      if (s == MESA_SHADER_VERTEX)
+         nir_foreach_shader_in_variable (var, nir)
+            d->vs.attrib_formats[var->data.location] = attrib_format(var->type);
+      init_descriptors(mem_ctx, d, nir, &layout);
 
       pco_lower_nir(ctx, nir, d);
       pco_postprocess_nir(ctx, nir, d);
@@ -720,9 +744,11 @@ usage:
          pvr_alloc_fs_sysvals(d, nir);
          pvr_alloc_fs_varyings(d, nir);
          /* pvr_setup_fs_outputs(): output register 0 */
-         nir_variable *var = nir_find_variable_with_location(nir, nir_var_shader_out, FRAG_RESULT_DATA0);
-         if (var)
-            set_var(d->fs.outputs, 0, var, DIV_ROUND_UP(formats[fmt].bytes, 4));
+         for (unsigned rt = 0; rt < nrt; rt++) {
+            nir_variable *var = nir_find_variable_with_location(nir, nir_var_shader_out, FRAG_RESULT_DATA0 + rt);
+            if (var)
+               set_var(d->fs.outputs, rt * DIV_ROUND_UP(formats[fmt].bytes, 4), var, DIV_ROUND_UP(formats[fmt].bytes, 4));
+         }
          /* pvr_setup_fs_blend(), pvr_setup_fs_sample_locations() */
          unsigned nbc = util_bitcount(d->fs.blend_consts_needed);
          if (nbc) {
