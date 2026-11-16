@@ -36,6 +36,8 @@ struct pfo_state {
    nir_def *depth_feedback_src;
 
    pco_fs_data *fs; /** Fragment-specific data. */
+
+   bool discard_selected; /** XCLIPSE: discard done by select_discard(). */
 };
 
 /** Per-vertex input pass state. */
@@ -606,7 +608,8 @@ static bool lower_isp_fb(nir_builder *b, struct pfo_state *state)
    /* XCLIPSE: with a static fs meta word the sample check may be gone; a shader with no discard
     * left gives the ISP nothing to wait for. */
    nir_def *discard_cond = NULL;
-   if (!state->fs->meta_is_static || shader_has_discards(shader))
+   if (!state->discard_selected &&
+       (!state->fs->meta_is_static || shader_has_discards(shader)))
       discard_cond = nir_is_helper_invocation(b, 1);
 
    /* Drop depth writes and discard cond if early fragment tests. */
@@ -656,6 +659,46 @@ static void cond_disable_frag_store(nir_builder *b,
 
    nir_src_rewrite(input_src,
                    nir_bcsel(b, cond, prev_input, input));
+}
+
+/* XCLIPSE: discard by selecting the previous framebuffer value on each colour store (the
+ * colour-write-enable mechanism) instead of ISP feedback. Stores move to the end first (as
+ * sink_outputs does later), so the helper flag read there has seen every demote. */
+static bool select_discard(nir_shader *shader)
+{
+   nir_function_impl *impl = nir_shader_get_entrypoint(shader);
+   nir_block *last = nir_impl_last_block(impl);
+   nir_intrinsic_instr *stores[8];
+   unsigned n = 0;
+
+   nir_foreach_block (block, impl) {
+      nir_foreach_instr (instr, block) {
+         if (instr->type != nir_instr_type_intrinsic)
+            continue;
+         nir_intrinsic_instr *intr = nir_instr_as_intrinsic(instr);
+         if (intr->intrinsic != nir_intrinsic_store_output)
+            continue;
+         gl_frag_result loc = nir_intrinsic_io_semantics(intr).location;
+         if (!(loc >= FRAG_RESULT_DATA0 && loc < FRAG_RESULT_MAX))
+            continue;
+         if (n == ARRAY_SIZE(stores))
+            return false;
+         stores[n++] = intr;
+      }
+   }
+
+   if (!n)
+      return false;
+
+   for (unsigned i = 0; i < n; i++)
+      nir_instr_move(nir_after_block(last), &stores[i]->instr);
+
+   nir_builder b = nir_builder_at(nir_before_instr(&stores[0]->instr));
+   nir_def *is_helper = nir_is_helper_invocation(&b, 1);
+   for (unsigned i = 0; i < n; i++)
+      cond_disable_frag_store(&b, stores[i], is_helper);
+
+   return true;
 }
 
 /* When early fragment testing is enabled, rather than using ISP feedback to
@@ -899,6 +942,14 @@ bool pco_nir_pfo(nir_shader *shader, pco_fs_data *fs)
                                              lower_color_write_enable,
                                              nir_metadata_control_flow,
                                              NULL);
+   }
+
+   if (fs->discard_select && !shader->info.internal &&
+       !shader->info.fs.early_fragment_tests && shader_has_discards(shader) &&
+       select_discard(shader)) {
+      state.discard_selected = true;
+      fs->uses.fbfetch = true;
+      progress = true;
    }
 
    progress |= nir_shader_intrinsics_pass(shader,

@@ -2870,6 +2870,40 @@ group_map(O_TSTZ,
    ]
 )
 
+group_map(O_CMPP,
+   hdr=(I_IGRP_HDR_MAIN, [
+      ('oporg', 'p0_p1_p2'),
+      ('olchk', OM_OLCHK),
+      ('w1p', False),
+      ('w0p', ('!pco_ref_is_null', DEST(0))),
+      ('cc', OM_EXEC_CND),
+      ('end', OM_END),
+      ('atom', OM_ATOM),
+      ('rpt', OM_RPT)
+   ]),
+   enc_ops=[
+      ('0', O_MBYP, ['ft0'], [SRC(0)]),
+      ('1', O_MBYP, ['ft1'], [SRC(1)]),
+      ('2_tst', O_TST, ['ftt', DEST(1)], ['is1', 'is2'], [(OM_TST_OP_MAIN, OM_TST_OP_MAIN), (OM_TST_TYPE_MAIN, OM_TST_TYPE_MAIN)]),
+      ('2_pck', O_PCK, ['ft2'], ['_'], [(OM_PCK_FMT, 'zero')]),
+      ('2_mov', O_MOVC, [DEST(0), '_'], ['ftt', 'fte', 'is4', '_', '_'])
+   ],
+   srcs=[
+      ('s[0]', ('0', SRC(0)), 's0'),
+      ('s[1]', 'pco_true'),
+      ('s[3]', ('1', SRC(0)), 's3'),
+   ],
+   iss=[
+      ('is[0]', 's1'),
+      ('is[1]', 'ft0'),
+      ('is[2]', 'ft1'),
+      ('is[4]', 'ft2'),
+   ],
+   dests=[
+      ('w[0]', ('2_mov', DEST(0)), 'w0'),
+   ]
+)
+
 group_map(O_ST32,
    hdr=(I_IGRP_HDR_MAIN, [
       ('oporg', 'be'),

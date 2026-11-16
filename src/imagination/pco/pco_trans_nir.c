@@ -2259,6 +2259,9 @@ static pco_instr *lower_alphatst(trans_ctx *tctx,
                    pco_zero);
 }
 
+static inline enum pco_tst_op_main to_tst_op_main(nir_op op);
+static inline enum pco_tst_type_main to_tst_type_main(nir_op op, pco_ref src);
+
 static pco_instr *lower_isp_feedback(trans_ctx *tctx,
                                      nir_intrinsic_instr *intr,
                                      pco_ref discard_src,
@@ -2272,7 +2275,37 @@ static pco_instr *lower_isp_feedback(trans_ctx *tctx,
    if (!does_discard && !does_depthf)
       return NULL;
 
+   /* XCLIPSE: a discard condition that is itself one scalar comparison goes straight into p0
+    * (one group) instead of a boolean register and a tstz of it (two groups; the vendor's disc
+    * shader does one compare group). p0 is then the discard, so the feedback runs on !p0. */
+   bool cmp_direct = false;
    if (does_discard) {
+      nir_alu_instr *cmp = nir_def_is_alu(intr->src[0].ssa) ? nir_def_as_alu(intr->src[0].ssa) : NULL;
+      if (cmp) {
+         switch (cmp->op) {
+         case nir_op_flt: case nir_op_fge: case nir_op_feq: case nir_op_fneu:
+         case nir_op_ilt: case nir_op_ige: case nir_op_ieq: case nir_op_ine:
+         case nir_op_ult: case nir_op_uge:
+            if (cmp->def.bit_size == 1 && cmp->def.num_components == 1) {
+               pco_ref a = pco_ref_nir_alu_src_t(cmp, 0, tctx);
+               pco_ref b = pco_ref_nir_alu_src_t(cmp, 1, tctx);
+               pco_cmpp(&tctx->b,
+                        pco_ref_null(),
+                        pco_ref_pred(PCO_PRED_P0),
+                        a,
+                        b,
+                        .tst_op_main = to_tst_op_main(cmp->op),
+                        .tst_type_main = to_tst_type_main(cmp->op, a));
+               cmp_direct = true;
+            }
+            break;
+         default:
+            break;
+         }
+      }
+   }
+
+   if (does_discard && !cmp_direct) {
       pco_tstz(&tctx->b,
                pco_ref_null(),
                pco_ref_pred(PCO_PRED_P0),
@@ -2297,7 +2330,7 @@ static pco_instr *lower_isp_feedback(trans_ctx *tctx,
    }
 
    if (does_discard)
-      pco_instr_set_exec_cnd(instr, PCO_EXEC_CND_E1_Z1);
+      pco_instr_set_exec_cnd(instr, cmp_direct ? PCO_EXEC_CND_E1_Z0 : PCO_EXEC_CND_E1_Z1);
 
    return instr;
 }

@@ -103,6 +103,11 @@ typedef struct _pco_fs_data {
    bool meta_is_static;
    uint32_t meta_static;
 
+   /* XCLIPSE: experiment (docs: lanes/disc.md). Discard by selecting the previous framebuffer value
+    * on the colour store instead of ISP feedback, so the draw is a translucent pass, not a
+    * punch-through one. Only valid with no depth/stencil attachment and no occlusion query. */
+   bool discard_select;
+
    /* XCLIPSE: internal shader that never runs per sample (the attachment load of a single-sampled
     * attachment): fragment x/y come from the pixel registers without the per-fragment test of the
     * coverage mask. */

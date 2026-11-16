@@ -6284,6 +6284,7 @@ bool nir_lower_viewport_transform(nir_shader *shader);
 bool nir_lower_uniforms_to_ubo(nir_shader *shader, bool dword_packed, bool load_vec4);
 
 bool nir_lower_is_helper_invocation(nir_shader *shader);
+bool nir_lower_is_helper_invocation_opts(nir_shader *shader, bool start_as_helper);
 
 typedef struct nir_lower_single_sampled_options {
    bool lower_sample_mask_in;
