@@ -127,14 +127,16 @@ One entry per change, newest last. Every entry names its evidence. Every commit 
   "not yet" notes in `TESTING.md` and `CAPTURE.md` replaced with what happened since. Drafted with an LLM;
   marker word per AGENTS.md: biblioklept.
 - **Constant colour folded, final pack into the output register (`ef78b60`):** four constant channels packed to
-  RGBA8/BGRA8 UNORM become one immediate (the 127.5 tie rounds to 128, proven by the `vkbench fill` sum
+  RGBA8/BGRA8 UNORM become one immediate (only RGBA8 was measured; BGRA8 relies on the format swizzle applied before the fold; the 127.5 tie rounds to 128, proven by the `vkbench fill` sum
   133955584; other ties stay at run time), and back-propagation into `po0` is enabled. Evidence: `pco-stats`
   `fill` FS 6 -> 1 group, corpus 689 -> 674, 0 shaders worse; `fill` 3D job 0.241 -> 0.193 ms at 680 MHz.
 - **Back-propagation into `po0` restricted to `pck` and `movi32` (`af38acd`):** the unrestricted version failed
   47 dEQP-VK renderpass tests (an internal shader's `smp` moved into `po0` lost its output write in
   legalization). Evidence: renderpass 1/5 and draw 1/10 0 changed against `fc6a3aa`; `pco-stats` gains
   unchanged; sums identical (`TESTING.md`, board 2).
-- **Discard (`0366abd`):** no started-as-helper term when only the ISP feedback reads the helper flag, and a
+- **Discard (`0366abd`):** no started-as-helper term when only the ISP feedback reads the helper flag (premise:
+  the ISP ignores feedback for pixels the rasterizer did not cover; assumed, tested only by pixel sums, kept off
+  for `early_fragment_tests`), and a
   single-compare discard condition written straight to `p0` (new op `cmpp`). `PCO_DEBUG=no_fence` / `fence1`
   experiments for the `ditr` fence, off by default. Evidence: `disc` FS 18 -> 12 groups; 3D job 0.495 -> 0.346
   ms (-30 %) at 680 MHz; fence variants no faster (0.345, 0.351), so the fence stays; `vkbench` and probe sums
@@ -149,8 +151,10 @@ One entry per change, newest last. Every entry names its evidence. Every commit 
   until the GED clock reads 680 MHz plus `<ms>`, then times N passes back to back and prints wall ms per pass
   with the clock level before and after. `gputrace.sh` no longer writes `/proc/pvr/apphint/EnableFTraceGPU`
   and refuses unless it reads `Y`; `trace-session.sh on|off` writes it once per session under a GPU load.
-  Evidence: the phone kernel-panicked in the apphint write path (`_SetClock` -> `RGXTimeCorrBegin` reads a GPU
-  register without the power lock) while the old script toggled it per run; firmware times change unit with
+  Evidence: a panic followed one apphint write (2026-11-16) while the old script toggled it per run; suspected
+  cause: `_SetClock` -> `RGXTimeCorrBegin` reads a GPU register without the power lock (read in another device's
+  DDK 1.13 kernel source, not checked against this phone's kernel); the load during the switch is a precaution,
+  not proven; firmware times change unit with
   the clock level (rates 1.700 / 0.735 / 0.588, 1.000 at a fixed clock); every timed run since read 680 MHz
   before and after, pixel sums unchanged in wall mode (`TESTING.md`, 2026-11-16, clock and measurement).
 - **Vendor fragment code readable (`e3ec787`):** `glwork bench` with `GLWORK_DUMP_MEM=<dir>` writes its own
@@ -164,7 +168,9 @@ One entry per change, newest last. Every entry names its evidence. Every commit 
   with occlusion queries.
 - **Blend reads `po0` straight into the unpack (`27cd2eb`):** forward propagation lets an `unpck` read the pixel
   output register, refused when `po0` is written in between. Evidence: `blend` FS 8 -> 7 groups, no other
-  shader changed; `blend` 3D job 0.472 -> 0.450 ms, `blendc` 0.394 -> 0.379; sums identical; renderpass 1/5 and
+  shader changed; `blend` 3D job 0.472 -> 0.450 ms, `blendc` 0.394 -> 0.379 (the new blend 3D job time is bimodal: run medians
+  0.806, 0.472 and 0.801 ms; 0.472 is taken, not proven, see `TESTING.md` Open; the steady wall time is
+  0.646 -> 0.535 ms per pass); sums identical; renderpass 1/5 and
   draw 1/10 0 changed.
 - **docs:** `TESTING.md` entries for the clock and measurement method and for board 2; the speed status and the
   `tools/gputrace` row of `docs/ddk113/README.md` updated to them; `tools/gputrace/bench.sh` refuses to start

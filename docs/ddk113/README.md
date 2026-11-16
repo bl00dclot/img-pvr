@@ -16,7 +16,8 @@ passes, including partial renders (`TESTING.md` L0–L7). All four DDK 1.13 comm
   probe runs (one TA lockup, unexplained), and rose during the dEQP-VK `api` and `renderpass` subsets.
 - **Speed:** measured at one GPU clock (680 MHz; `TESTING.md`, 2026-11-16 entries), the GPU time of a
   512x512 pass against the vendor GLES driver is 1.09x for a plain fill, 1.23x with discard, 1.44x for
-  blending over loaded contents, 1.56x for an ALU-heavy shader, and 0.88x for a texture read. The probe
+  blending over loaded contents (its new 3D job time is bimodal: run medians 0.806, 0.472 and 0.801 ms; 0.472
+  is taken, not proven, see `TESTING.md` Open; the steady wall time is 0.646 -> 0.535 ms per pass), 1.56x for an ALU-heavy shader, and 0.88x for a texture read. The probe
   passes, draws and chains were 2.3–3.9x slower than GLES on 2026-11-15 at mixed clock levels and have not
   been compared with GLES at one clock since; uploads are 1.2–1.4x faster. "Next for speed" below lists what
   remains.
@@ -79,7 +80,7 @@ expect a loader (dEQP-VK). Inside an app the ICD also needs a `libhardware.so` n
 | `tools/gen_bridge.py`, `tools/check_memflags.sh` | generate the 1.13 bridge header from kernel headers; check memory-flag values against both DDKs |
 | `tools/pvrtrace/` | root ptrace tracer of the bridge ioctls with the kick command blobs and context state, an edit mode (`-e`), `decode.py`, and `glwork` (GLES scenes for the vendor driver) |
 | `tools/vktest/` | loader-less Vulkan tests: `vkcompute`, `vktransfer`, `vkdraw` (clear, draw, big, fill), `vkshim` |
-| `tools/gputrace/` | GPU job times from the kernel driver's ftrace events: `trace-session.sh on` once per phone session (each switch of the trace can panic the kernel if the GPU is powered down, so never per run), then `gputrace.sh` per run; `gpujobs.py` and `bench_table.py` on the host. `BENCH_WALL=<ms>` in `vkbench`/`glwork` warms the GPU up to 680 MHz first (`TESTING.md`) |
+| `tools/gputrace/` | GPU job times from the kernel driver's ftrace events: `trace-session.sh on` once per phone session (a panic followed one apphint write on 2026-11-16, suspected cause a clock-correlation read without the power lock, not checked against this phone's kernel; the load during the switch is a precaution, not proven; so once per session, never per run), then `gputrace.sh` per run; `gpujobs.py` and `bench_table.py` on the host. `BENCH_WALL=<ms>` in `vkbench`/`glwork` warms the GPU up to 680 MHz first (`TESTING.md`) |
 
 ## Next for speed
 
