@@ -129,13 +129,13 @@ def scan_headers(buf, min_groups=4):
     return hits
 
 
-def report(path):
+def report(path, min_groups=4):
     import re
     buf = open(path, 'rb').read()
     be32 = lambda o: int.from_bytes(buf[o:o + 4], 'big')
     print(f'{path}: {len(buf)} bytes; BE32@0x0c={be32(0xc)} BE32@0x28={be32(0x28)} word@4={buf[4:8].hex()}')
     print('  strings:', [x.decode() for x in re.findall(rb'[A-Za-z_0-9.]{3,}', buf)])
-    for o, ch in scan_headers(buf):
+    for o, ch in scan_headers(buf, min_groups):
         n = sum(g[0]['len'] for g in ch)
         print(f'  code chain @0x{o:x}: {len(ch)} groups, {n} bytes')
         for h, p in ch:
@@ -145,5 +145,10 @@ def report(path):
 
 
 if __name__ == '__main__':
-    for f in sys.argv[1:]:
-        report(f)
+    # XCLIPSE: -m N lowers the minimum chain length (default 4); a fill fragment shader has 3 groups
+    a = sys.argv[1:]
+    n = 4
+    if a[:1] == ['-m']:
+        n, a = int(a[1]), a[2:]
+    for f in a:
+        report(f, n)
