@@ -703,6 +703,7 @@ usage:
          f->uses.alpha_to_coverage = false;
 
          f->meta_is_static = true;
+   f->discard_select = getenv("PVR_DISC_SELECT") != NULL; /* XCLIPSE: A/B, no depth/stencil in the modelled state */
          f->meta_static = (BITFIELD_MASK(PVR_FS_META_SAMPLE_MASK_LENGTH) << PVR_FS_META_SAMPLE_MASK_OFFSET) |
                           (BITFIELD_MASK(PVR_FS_META_COLOR_WRITE_ENABLE_LENGTH) << PVR_FS_META_COLOR_WRITE_ENABLE_OFFSET);
       }

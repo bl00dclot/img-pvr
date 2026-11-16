@@ -88,8 +88,11 @@ has_is_helper_invocation(nir_shader *shader)
    return false;
 }
 
+/* XCLIPSE: start_as_helper false drops the initial value (the sample-mask arithmetic of the lowered
+ * load_helper_invocation) for a driver whose only reader is the ISP feedback, which ignores
+ * pixels the rasterizer did not cover anyway. */
 bool
-nir_lower_is_helper_invocation(nir_shader *shader)
+nir_lower_is_helper_invocation_opts(nir_shader *shader, bool start_as_helper)
 {
    if (shader->info.stage != MESA_SHADER_FRAGMENT)
       return false;
@@ -105,7 +108,7 @@ nir_lower_is_helper_invocation(nir_shader *shader)
                                                        glsl_bool_type(),
                                                        "gl_IsHelperInvocationEXT");
 
-   nir_def *started_as_helper = shader->options->lower_helper_invocation ? nir_build_lowered_load_helper_invocation(&b) : nir_load_helper_invocation(&b, 1);
+   nir_def *started_as_helper = !start_as_helper ? nir_imm_false(&b) : shader->options->lower_helper_invocation ? nir_build_lowered_load_helper_invocation(&b) : nir_load_helper_invocation(&b, 1);
 
    nir_deref_instr *is_helper_deref = nir_build_deref_var(&b, is_helper);
    nir_store_deref(&b, is_helper_deref, started_as_helper, 1);
@@ -113,4 +116,10 @@ nir_lower_is_helper_invocation(nir_shader *shader)
    return nir_shader_intrinsics_pass(shader, lower_load_and_store_is_helper,
                                      nir_metadata_control_flow,
                                      is_helper_deref);
+}
+
+bool
+nir_lower_is_helper_invocation(nir_shader *shader)
+{
+   return nir_lower_is_helper_invocation_opts(shader, true);
 }

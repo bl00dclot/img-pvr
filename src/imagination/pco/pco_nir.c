@@ -1073,8 +1073,25 @@ void pco_lower_nir(pco_ctx *ctx, nir_shader *nir, pco_data *data)
       NIR_PASS(_, nir, pco_nir_lower_interpolation, &data->fs);
       if (!internal)
          NIR_PASS(_, nir, pco_nir_lower_sample_mask_out, &data->fs);
+
+      /* XCLIPSE: when nothing but the ISP feedback / early-fragment select that pco_nir_pfo adds reads
+       * gl_IsHelperInvocation (no explicit read, no helper-write guard), the invocation need not start
+       * as a helper: the ISP ignores feedback for uncovered pixels, and everything else runs to the end
+       * either way (no hardware kill), so demote and terminate coincide. This drops the sample-mask
+       * arithmetic from every discarding shader (disc FS 18 -> fewer instruction groups). */
+      bool user_helper_read = false;
+      nir_foreach_function_impl (impl, nir) {
+         nir_foreach_block (block, impl) {
+            nir_foreach_instr (instr, block) {
+               if (instr->type == nir_instr_type_intrinsic &&
+                   nir_instr_as_intrinsic(instr)->intrinsic == nir_intrinsic_is_helper_invocation)
+                  user_helper_read = true;
+            }
+         }
+      }
+
       NIR_PASS(_, nir, pco_nir_pfo, &data->fs);
-      NIR_PASS(_, nir, nir_lower_is_helper_invocation);
+      NIR_PASS(_, nir, nir_lower_is_helper_invocation_opts, user_helper_read || internal);
       NIR_PASS(_, nir, pco_nir_lower_fs_intrinsics, &data->fs);
    } else if (nir->info.stage == MESA_SHADER_VERTEX) {
       /* If needed, duplicate the point size for xfb prior to it being clamped.

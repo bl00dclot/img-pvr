@@ -166,9 +166,20 @@ static bool legalize_fence(pco_instr *instr)
    pco_builder b =
       pco_builder_create(instr->parent_func, pco_cursor_after_instr(instr));
 
+   if (PCO_DEBUG(NO_FENCE)) {
+      pco_instr_delete(instr);
+      return true;
+   }
+
    if (pco_is_last_instr(instr)) {
       pco_nop(&b);
       b.cursor = pco_cursor_after_instr(instr);
+   }
+
+   if (PCO_DEBUG(FENCE1)) {
+      pco_br_next(&b);
+      pco_instr_delete(instr);
+      return true;
    }
 
    pco_flush_p0(&b);
