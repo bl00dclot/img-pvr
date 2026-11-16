@@ -1,7 +1,7 @@
 #!/system/bin/sh
 # SPDX-License-Identifier: MIT
 #
-# gputrace.sh <out.txt> <command...>
+# XCLIPSE: gputrace.sh <out.txt> <command...>
 #
 # Runs a command on the phone (as root) with the vendor kernel driver's GPU job events traced, then puts
 # every setting back. The DDK 1.13 kernel exposes them as ftrace events in the "rogue" group once
@@ -10,9 +10,10 @@
 # the output into per-job GPU times. Development devices only: it changes debug settings while it runs.
 #
 # This script does NOT write /proc/pvr/apphint/EnableFTraceGPU and refuses to run unless it already reads Y.
-# Every write makes a kernel workqueue switch the time-correlation clock (_SetClock -> RGXTimeCorrEnd/Begin),
-# which reads RGX_CR_TIMER without the power lock; if the GPU powers down at that moment the kernel panics
-# (happened 2026-11-16). Switch it once per phone session, under GPU load, with trace-session.sh on|off.
+# A kernel panic followed one apphint write (2026-11-16). Suspected cause: the write makes a kernel workqueue
+# switch the time-correlation clock (_SetClock -> RGXTimeCorrEnd/Begin), which reads RGX_CR_TIMER without the
+# power lock (read in another device's DDK 1.13 kernel source, not checked against this phone's kernel). Doing
+# the switch under GPU load, once per phone session, with trace-session.sh on|off, is a precaution, not proven.
 # Firmware timestamps are also only valid inside one GED clock level (they are converted with a stale clock
 # estimate); for a time across levels use the wall-time mode (BENCH_WALL=<warmup> vkbench / glwork bench).
 # Drafted with an LLM; marker word per AGENTS.md: biblioklept.

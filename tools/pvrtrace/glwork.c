@@ -172,7 +172,7 @@ static int scene(const char *mode, GLuint resolve_fbo)
    return 0;
 }
 
-/* bench: the shaders of tools/vktest/bench/ in GLSL ES, one 512x512 pass per iteration with a glFinish, so
+/* XCLIPSE: bench: the shaders of tools/vktest/bench/ in GLSL ES, one 512x512 pass per iteration with a glFinish, so
  * tools/gputrace times every 3D job; the counterpart of tools/vktest/vkbench (same modes, texture pattern,
  * filtering and blend). Highp throughout except alum/tvm, as in the Vulkan shaders. With
  * GLWORK_DUMP_BINARY=<file> the program binary is written out, for an offline look at what the vendor
@@ -211,7 +211,7 @@ static void ged_freq(char *out, size_t n)
  * to <dir>/<start>-<end>.bin. write() of an unreadable page fails with EFAULT instead of faulting, so device
  * mappings are copied page by page and unreadable pages become zeros. The vendor driver compiles the fragment
  * shader to USC code at draw time and the code lives in such a mapping; tools/pco-scan finds it. Output holds
- * vendor code: local only. */
+ * vendor code: local only, so the files are mode 0600. Ignored when BENCH_WALL is set. */
 static void dump_mem(const char *dir)
 {
    FILE *m = fopen("/proc/self/maps", "r");
@@ -232,7 +232,7 @@ static void dump_mem(const char *dir)
          continue; /* keep anonymous, [heap] and /dev mappings */
       char name[300];
       snprintf(name, sizeof(name), "%s/%08lx-%08lx.bin", dir, a, b);
-      int fd = open(name, O_WRONLY | O_CREAT | O_TRUNC, 0644);
+      int fd = open(name, O_WRONLY | O_CREAT | O_TRUNC, 0600);
       if (fd < 0)
          continue;
       unsigned bad = 0;

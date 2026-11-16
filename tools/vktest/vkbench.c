@@ -30,7 +30,7 @@
 // "wall <mode> <ms>/pass freq <before> -> <after>": the GED clock samples (read-only, /sys/kernel/ged/hal/
 // current_freqency) taken just before and just after the timed block tag the result with its clock level.
 // Firmware job times are only valid inside one clock level (the kernel converts them with a stale clock
-// estimate); wall time is not affected. XCLIPSE: 680 MHz vk/gl ratios from this mode: see lanes/measure.md.
+// estimate); wall time is not affected. XCLIPSE: 680 MHz vk/gl ratios from this mode: see docs/ddk113/TESTING.md.
 // Prints the byte sum of the last iteration's image; it only has to be non-zero and repeatable.
 //
 // Build (armv7): $NDK/.../armv7a-linux-androideabi29-clang -O2 -Wall -Wextra -Werror
