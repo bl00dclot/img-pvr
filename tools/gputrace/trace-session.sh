@@ -22,13 +22,16 @@ if [ "$cur" = "$want" ]; then
 fi
 ${LOAD:-/data/local/tmp/s0/glwork bench tv 100000} >/dev/null 2>&1 &
 load=$!
-trap 'kill $load 2>/dev/null' EXIT INT TERM
+trap 'kill $load 2>/dev/null' EXIT
+trap 'exit 130' INT TERM
 sleep 1
 kill -0 $load 2>/dev/null || { echo "trace-session.sh: load did not start; not writing" >&2; exit 4; }
+trap '' INT TERM   # XCLIPSE: no interrupt between the write and the readback, the load must keep running
 echo $want > $A
 i=0
 while [ "$(cat $A)" != "$want" ] && [ $i -lt 50 ]; do sleep 0.2; i=$((i + 1)); done
 sleep 1   # let the workqueue finish while the load still runs
+trap 'exit 130' INT TERM
 kill $load 2>/dev/null
 wait $load 2>/dev/null
 [ "$(cat $A)" = "$want" ] || { echo "trace-session.sh: read back $(cat $A), wanted $want; the apphint state is unknown, check it with: cat $A" >&2; exit 5; }

@@ -8,7 +8,7 @@ the PCO compiler, takes SPIR-V, runs it through the same steps as `pvr_graphics_
 ## Use
 
 ```sh
-# 1. build the tool (host build dir, build image; hold the build lock when other lanes share the machine)
+# 1. build the tool (host build dir, build image; serialise builds when several jobs share the machine)
 flock <repo>/.locks/build docker run --rm --user $(id -u):$(id -g) -e HOME=/tmp -v $PWD:/src img-pvr-build:trixie \
     bash -c 'ninja -C build-host src/imagination/pco/pco_stats'      # build-host from ./build.sh stage 1 (or its meson setup line)
 # 2. compile the corpus and collect stats
@@ -65,7 +65,7 @@ driver changes them, update the copy. The device check below is what notices dri
 `phone2stats.py name < log` converts the device log of one pipeline (`PCO_DEBUG_PRINT=vs,fs,stats PCO_COLOR=off
 vkbench <driver.so> <mode> 1`; the `stats` flag alone prints nothing without `vs`/`fs`) into the same line format, then
 `compare.py device.txt host.txt -s igrps,main,bitwise,control,temps,vtxins,spills,scratch,loops,code_size,smp,...` must report 0
-changed. Results for the corpus are in the lane report of the commit that added the tool.
+changed. 15 of the 16 corpus pipelines (all but `probe/t1nb`) matched on the device when the tool was added (`results/device-bf89cfc.txt`).
 
 ## Reference results
 

@@ -8,7 +8,7 @@
 #   tools/vktest/pvr_cache_fuzz.sh <driver dir on the device> <vkbench binary on the device> \
 #       <forged dir on the host> <device work dir> <results file>
 #
-# The caller holds the phone lock (docs/LANES.md) and checks that the app is not running.
+# The caller must have exclusive use of the phone and checks that the app is not running.
 # Drafted with an LLM; marker word per AGENTS.md: biblioklept.
 set -euo pipefail
 

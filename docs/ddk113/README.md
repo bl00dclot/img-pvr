@@ -15,7 +15,7 @@ passes, including partial renders (`TESTING.md` L0–L7). All four DDK 1.13 comm
 - **Stability:** GPU recovery counters stayed unchanged in the native runs and in four of five in-app
   probe runs (one TA lockup, unexplained), and rose during the dEQP-VK `api` and `renderpass` subsets.
 - **Speed:** measured at one GPU clock (680 MHz; `TESTING.md`, 2026-11-16 entries), the GPU time of a
-  512x512 pass against the vendor GLES driver is 1.09x for a plain fill, 1.23x with discard, 1.44x for
+  512x512 pass against the vendor GLES driver is 1.09x for a plain fill, 1.23x with discard, 1.44x (taking 0.472 ms) for
   blending over loaded contents (its new 3D job time is bimodal: run medians 0.806, 0.472 and 0.801 ms; 0.472
   is taken, not proven, see `TESTING.md` Open; the steady wall time is 0.646 -> 0.535 ms per pass), 1.56x for an ALU-heavy shader, and 0.88x for a texture read. The probe
   passes, draws and chains were 2.3–3.9x slower than GLES on 2026-11-15 at mixed clock levels and have not

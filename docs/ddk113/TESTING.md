@@ -326,7 +326,7 @@ master's recovery list in the dump are old (page-catalog faults on USC code) and
 | scaled `blit_image` colour, 1D/2D/3D, nearest and linear | 110 | the sample of a scaled blit landed on the corner of the destination pixel | fixed, `87ec23f` |
 | `blit_image` `generate_mipmaps` | 37 | same | fixed |
 | `blit_image` 3D mirror | 1 | same | fixed |
-| `renderpass` D16/D24 depth, `x8_d24`, `d24_s8` clears | 16 | the clear depth of the render pass was written as an unorm integer; the core reads the float | fixed, `a9e3c31` (also 9 `fragment_operations` depth tests found by the merge lane) |
+| `renderpass` D16/D24 depth, `x8_d24`, `d24_s8` clears | 16 | the clear depth of the render pass was written as an unorm integer; the core reads the float | fixed, `a9e3c31` (also 9 `fragment_operations` depth tests found by the pixel-merging work) |
 | `renderpass` other (colour+depth+stencil D24 simple tests) | 2 | same | fixed |
 | blit from ETC2/EAC | 20 | see the recovery table | skipped |
 | copy/blit D24S8/D32S8 | 6 | recovery table | skipped |
