@@ -7,12 +7,19 @@
 # each under gputrace.sh, with HWR counters recorded before and after. Then, on the host:
 #   adb pull <out-dir> && tools/gputrace/bench_table.py <pulled dir>
 # Run as root with the game closed. Drafted with an LLM; marker word per AGENTS.md: biblioklept.
+# XCLIPSE: gputrace.sh refuses unless /proc/pvr/apphint/EnableFTraceGPU already reads Y (switching it can panic
+# the kernel, see gputrace.sh), so run "<bin>/trace-session.sh on" before this script and "off" after it.
+# Firmware times are valid only within one GPU clock level: set BENCH_WALL=300 to warm up to 680 MHz first.
 set -u
 out=$1
 bin=$2
 icd=$3
 n=${4:-20}
 modes="fill tv tf td c1 c2 fetch disc alu alum tvm blend"
+if [ "$(cat /proc/pvr/apphint/EnableFTraceGPU 2>/dev/null)" != Y ]; then
+  echo "bench.sh: GPU trace is off; run '$bin/trace-session.sh on' first (and 'off' when done)" >&2
+  exit 3
+fi
 mkdir -p "$out" || exit 1
 grep "Number of HWR" /proc/pvr/debug_dump > "$out/hwr-before.txt"
 for m in $modes; do
