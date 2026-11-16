@@ -593,7 +593,16 @@ bool pco_opt(pco_shader *shader)
 
    PCO_PASS(progress, shader, pco_opt_prep_mods, &ctx);
    PCO_PASS(progress, shader, pco_opt_back_prop);
-   PCO_PASS(progress, shader, pco_opt_fwd_prop);
+   /* XCLIPSE: to a fixed point, so a mov chain such as fract's
+    * (mov.flr, then mov.neg into the fadd) ends in one fadd with both source
+    * modifiers, as the vendor emits it (bench alu FS 202 -> 138 groups, pco_stats).
+    */
+   bool fwd_progress;
+   do {
+      fwd_progress = false;
+      PCO_PASS(fwd_progress, shader, pco_opt_fwd_prop);
+      progress |= fwd_progress;
+   } while (fwd_progress);
    /* TODO: Track whether there are any comp instructions referencing hw
     * registers resulting from the previous passes, and only run
     * pco_opt_prop_hw_comps if this is the case.
