@@ -360,3 +360,300 @@ Pass->Fail; renderpass 18 Fail->Pass, 2,222 Pass->Pass, 0 Pass->Fail.
 `bf89cfc`: no recovery. Not reproduced. The TA hangs found above have no MMU fault and a different signature.
 
 Drafted with an LLM; marker word per AGENTS.md: biblioklept.
+
+### 2026-11-16: the GPU clock, a kernel panic, and how GPU time is measured now (lanes clock and measure)
+
+Why: the probe lane saw Vulkan job times flip between two values from run to run, and some single runs had
+Vulkan faster than GLES. This entry finds the cause and replaces the measuring method. No driver change; the
+driver measured is the branch head of the time, `fc6a3aa`.
+
+**Clock levels.** MediaTek's GPU DVFS (GED) runs the GE8320 at three levels on this phone: 0 = 680 MHz,
+1 = 500 MHz, 2 = 400 MHz. A sampler read GED's current level (`/sys/kernel/ged/hal/current_freqency`) about
+3,000 times a second (about 0.3 ms resolution) during 64 benchmark runs (8 `vkbench`/`glwork` modes, Vulkan and
+GLES, 4 rounds, 400 passes per run), and each 3D job was tagged with the level it ran at; jobs during which the
+level changed were left out. The file holds GED's last decision, not a hardware reading; a second, independent
+tag from the firmware-to-host timestamp rate agreed on 9,424 of 9,435 Vulkan jobs.
+
+- GED raises the clock to 680 MHz about 33 ms after a load starts and steps it down again in steps of about
+  33 ms after the load ends.
+- Vulkan: 30 of 32 runs started at 400 or 500 MHz; the modes with short jobs spent 4–53 % of a 400-pass run at
+  680 MHz (`alu` and `td`, with long jobs, 95–99 %). At 20 passes, as the probe lane ran them, `fill`, `blend`,
+  `tv`, `tf` and `disc` reached 680 MHz in 0 of 4 runs, `fetch` in 1 of 4.
+- Vendor GLES: GED switches between 680 and 500/400 MHz about every millisecond; GLES spent 72–98 % of each run
+  at 680 MHz.
+
+**Firmware timestamps change unit with the clock.** Slope of the firmware end timestamps against the host end
+times, over blocks of at least 15 consecutive jobs at one level spanning at least 12 ms:
+
+| Level | Blocks | Jobs | Firmware/host slope, median (min–max) |
+|---|---|---|---|
+| 680 MHz, Vulkan | 59 | 6,365 | 1.700 (1.488–1.703) |
+| 680 MHz, GLES | 8 | 2,425 | 1.700 (1.700–1.700) |
+| 500 MHz, Vulkan | 46 | 1,155 | 0.735 (0.732–1.252) |
+| 400 MHz, Vulkan | 62 | 4,968 | 0.588 (0.587–0.917) |
+| fixed at 680 MHz (GED floor pinned, below) | 30 Vulkan + 30 GLES | 12,000 + 12,000 | 1.000 (1.000–1.000) |
+
+1.700 = 680/400, 0.735 = 500/680, 0.588 = 400/680. It is a change of unit, not of speed: `fill` is fixed work
+and shows 0.406 firmware ms at 680 MHz and 0.237 at 400 MHz, both about 161,000–162,000 GPU cycles.
+
+Likely cause, from the kernel source (a MediaTek DDK 1.13 kernel tree of another device, whose function names
+match this phone's panic call chain below): the GPU timer ticks once per 256 core cycles, and the kernel
+converts ticks to OS time with the clock rate it estimated over the previous calibration window. Under DVFS that
+estimate is stale (the rates above); at a fixed clock it is exact (slope 1.000). This fits the measurements; it
+was not checked against the phone's own kernel build.
+
+Consequences:
+
+- A firmware job time means something only within one clock level. Compute-bound jobs even show fewer firmware
+  ms at 400 MHz than at 680 MHz although they take longer.
+- The run-to-run flip was the clock level. Single-run "Vulkan faster than GLES" readings were Vulkan at
+  400/500 MHz against GLES at 680 MHz.
+- The firmware ms in the earlier entries of this log mix clock levels: the "speed work" entry's "about 1.45x
+  wall ms" was taken without knowing the level, and the "lane blend" entry's Vulkan runs were at 400 MHz while
+  GLES, by the shares above, runs mostly at 680 MHz. Before/after pairs taken at one level stand; Vulkan against GLES ratios from them do not.
+- Vulkan/GLES ratios from 680 MHz jobs only (median over 4 rounds), against the ratio over all jobs:
+
+| Mode | All jobs | 680 MHz only | Pinned at 680 MHz |
+|---|---|---|---|
+| `fill` | 0.78 | 1.34 | 1.34 |
+| `alu` | 1.57 | 1.57 | 1.57 |
+| `blend` | 1.49 (1.11–1.92) | 1.89 | 1.89 |
+| `tv` | 0.56 | 1.02 | 1.03 |
+| `tf` | 0.61 | 1.06 | 1.01 |
+| `td` | 0.99 | 0.99 | 0.99 |
+| `fetch` | 0.61 | 1.00 | 1.03 (3 rounds) |
+| `disc` | 1.04 (0.98–1.67) | 1.68 | 1.69 (3 rounds) |
+
+  Texture reads are at parity with GLES; fill, blend and discard are the real gaps, with ALU.
+
+**The pin and the kernel panic.** To confirm the table, the GED floor was pinned to 680 MHz
+(`custom_boost_gpu_freq`) under a script on the phone with a deadline, temperature and throttling aborts and a
+dead-man restore, all tested first. Under the pin every job ran at 680 MHz and firmware time equalled wall time
+(slope 1.000, table above). About 6 minutes into the pinned session (2026-11-16, about 12:31 UTC, GLES `fetch`,
+round 4) the phone kernel-panicked and rebooted (boot reason `kernel_panic`). The console log kept across the
+reboot shows a synchronous external abort at `RGXTimeCorrBegin+0x5c` in the kernel's `apphint_workqueue`, call
+chain `apphint_action_worker` > `_GpuTraceSetEnabledCallback` > `_GpuTraceSetEnabled` >
+`RGXTimeCorrSetClockSource` > `_SetClock` > `RGXTimeCorrBegin`.
+
+Cause, from the same kernel source. Writing `/proc/pvr/apphint/EnableFTraceGPU` makes the apphint workqueue
+switch GPU ftrace on or off. Switching on sets the firmware HWPerf event mask, opens the HWPerf stream, registers
+a command-complete notifier that turns HWPerf packets into the `rogue_*` ftrace events, and switches the time
+correlation clock source to `sched_clock`; switching off undoes this. Each clock-source switch calls
+`_SetClock`, which calls `RGXTimeCorrEnd` and then `RGXTimeCorrBegin`, and each of those reads `RGX_CR_TIMER`
+directly (`RGXReadHWTimerReg`) without the power lock and without checking the GPU power state. The periodic
+path, `RGXTimeCorrRestartPeriodic`, takes `PVRSRVPowerTryLock` and skips the read when the GPU is not on. A read
+of a register of a powered-down GPU is the likely source of the abort. The same unguarded `_SetClock` is in DDK
+1.15 and in a newer upstream tree. The board-1 `gputrace.sh` wrote the apphint at the start and the end of every
+run, hundreds of times before without a panic; whether the pin made the race more likely is not known.
+Temperatures were normal (CPU zone at most 45.6 °C; the watcher's abort was 50 °C). Mesa's driver is not in the
+call chain.
+
+After the reboot `adb shell` runs as an unprivileged user; root is through `su`. The pin is not used any more
+(no writes under `/sys/kernel/ged/`); the 680 MHz-only ratios above did not need it.
+
+**Method from now on** (tools in `8b3af25` and `e52992c`, run as root, game closed, HWR counters before and
+after every session):
+
+1. `tools/gputrace/trace-session.sh on` once at the start of a phone session, `off` once at the end. It writes
+   the apphint only while a GLES load runs, so the GPU is powered, polls the readback, and refuses (exit 3) when
+   the value is already the one asked for. `gputrace.sh` never writes it and refuses (exit 3) unless it already
+   reads `Y`. First test: on, one trace (267 lines, 204 `rogue_sched_switch`, 52 `rogue_job_enqueue`), off;
+   HWR unchanged. Every later session in this log used it the same way without a panic.
+2. `BENCH_WALL=300` on `vkbench` and `glwork bench`: warm up in batches of 64 passes until GED reads level 0
+   (680 MHz) plus 300 ms, at most 5 s (level readings in the first 200 ms are ignored: a 0 there is left from
+   the previous process), then time N passes back to back (Vulkan: one command buffer, one submit, one wait;
+   GLES: `glFlush` per pass, one `glFinish`) and print wall ms per pass and the GED level before and after. A
+   run counts only if both read 680 MHz. Two earlier warm-ups failed: one pass per submit left the GPU mostly
+   idle and GED at 400/500 MHz for the whole 5 s; 400 warm-up passes started the timed block at 400/500 MHz.
+3. Main number: the 3D job time, the median per run of the trace's 3D jobs (`bench_table.py`, `frag_times`),
+   three runs, the median of the three. All jobs are at 680 MHz, so all are in one unit.
+4. GLES per-pass 3D time comes from one-pass jobs: `glwork bench` with `BENCH_WALL=300` and N = 1, the timed
+   pass being the last 3D job of the trace. With N = 2,000 the vendor driver puts all passes into one 3D job
+   (`fill`: 71.5 ms for 2,000 passes, 0.036 ms per pass; the warm-up jobs hold 65 passes each), so its batched
+   wall time (about 0.26 ms per pass, set by kicks and CPU) is not a per-pass GPU cost. The one-pass jobs hold
+   two TA/3D kicks, one of them not identified; their times (`fill` 0.178, `blend` 0.313, `disc` 0.287,
+   `tv` 0.294 ms, medians of 3) match the firmware figures of the pinned session (0.179, 0.307, 0.290,
+   0.289).
+5. Wall ms per pass only for before/after on the same API. Vulkan/GLES wall-time ratios at 680 MHz (2,000
+   passes, 3 runs each): `fill` 1.36 and `blend` 1.80 are within 5 % of the same-level firmware ratios (1.34,
+   1.89), `disc` 2.09 (1.68) and `tv` 1.40 (1.02) are not. Vulkan wall time carries a per-job floor (kick, TA/3D
+   hand-over) of about 0.34 ms per pass that hides light passes, and the GLES side is batched (item 4).
+
+Drafted with an LLM; marker word per AGENTS.md: biblioklept.
+
+### 2026-11-16: fill, discard, attachment load and blend shaders (board 2)
+
+Setup: the 680 MHz method of the previous entry; `vkbench` 512x512 passes, 2,000 timed passes per run, three
+runs, median. "Old" is `fc6a3aa` (or, for the last change, the branch head before it), "new" the change.
+Instruction groups come from `tools/pco-stats` on the host: 24 shader stages (12 `vkbench` shaders, vertex and
+fragment); the probe's shaders are not in the corpus. Correctness bar for every change: `vkbench` and probe
+pixel sums identical, dEQP-VK old against new driver on the same lists with 0 changed results, HWR counters
+unchanged.
+
+**Fill: constant colour folded, final pack written straight to the output (`ef78b60`, `af38acd`).**
+
+- `pack_to_format()` folds four constant float channels in [0, 1] packed to R8G8B8A8 or B8G8R8A8 UNORM into one
+  immediate. The tie 127.5 is folded to 128: the `vkbench fill` sum 133955584 / 512² = 511 = 64 + 128 + 191 + 128
+  proves that one tie. It does not tell round-half-up from round-half-even, so other ties, values within 1e-3
+  of a tie, out-of-range and NaN values are left to the run-time `pck`.
+- `pco_opt.c` back-propagation into the pixel output register `po0` was switched off in the import; the comment
+  said `pck` has no `olchk`, which is wrong (`pck` carries it in the group header, and `xfer_set_op_mods()`
+  copies it over). The first version (`ef78b60`) let any producer write `po0` and failed 47 dEQP-VK renderpass
+  tests that pass on the old driver (1/5 fraction; for example `dedicated_allocation.attachment.1.24`, input
+  attachment and depth/stencil cases). The internal load-op and transfer fragment shaders had their `smp` result
+  moved into `po0`; legalization then copied `po0` into a temporary before the `smp` and nothing wrote `po0`
+  afterwards. `af38acd` allows only `pck` and `movi32` (the folded colour). The legalization problem itself is
+  not fixed, only avoided.
+- Groups: `fill` FS 6 -> 1 (`bbyp0bm_imm32` to `po0` with `olchk` and end; temps 8 -> 0, code 64 -> 16 bytes);
+  `blend`, `tv`, `tvm`, `tf`, `fetch`, `td`, `c1`, `c2`, `alu`, `alum` FS one group fewer each. Corpus 689 -> 674
+  groups, 11 shaders better, 0 worse, temps 107 -> 95, code 7,664 -> 7,544 bytes.
+- 3D job ms (old -> new, medians of 3): `fill` 0.241 -> 0.193 (-20 %), `blend` 0.584 -> 0.535 (-8.4 %),
+  `tv` 0.259 -> 0.254 (-2 %). Sums identical (`fill` 133955584, `blend` 133431296, `tv` 133693440); probe
+  sums and centre pixels identical (T1 198639616, T2 282240902, T3 216989696, T4 33423360). The centre pixels
+  and dEQP's colour compares confirm the channel order of the folded colour.
+- dEQP-VK `af38acd` against `fc6a3aa`: renderpass 1/5 and draw 1/10, both exit 0, 0 changed.
+
+**Discard (`0366abd`; the select experiment removed in `c5948f8`).**
+
+- When nothing but the ISP feedback that `pco_nir_pfo` adds reads `gl_IsHelperInvocation` (no explicit read, no
+  helper-write guard), the invocation no longer starts as a helper
+  (`nir_lower_is_helper_invocation_opts.start_as_helper`): the sample-mask arithmetic goes (18 -> 13 groups).
+  Argument: the hardware has no kill, every invocation runs to the end, so demote and terminate coincide; the
+  ISP ignores feedback for pixels the rasterizer did not cover; for MSAA the sample check is already a demote in
+  the condition. The ISP premise is not proven on the device beyond the identical sums below.
+- New op `cmpp`: a discard condition that is one scalar compare is written straight to `p0`, and the feedback
+  runs on `!p0` (13 -> 12 groups). `disc` FS 18 -> 12 groups, temps 6 -> 5, code 200 -> 120 bytes; no other
+  shader changed.
+- The "empty if/else" the plan wanted removed is not dead code: `legalize_fence()` puts a 3-group fence after
+  every `ditr` (`flush_p0`, then `br.next` on both senses of `p0`; the code says "enforce WDF ordering"). Kept.
+  `PCO_DEBUG=no_fence` (10 groups) and `PCO_DEBUG=fence1` (11) stay as experiments, off by default.
+- 3D job ms: old 0.495 (0.503 0.495 0.495), new 0.346 (0.344 0.351 0.346), -30 %; wall 0.559 -> 0.412 ms per
+  pass. `no_fence` 0.345 and `fence1` 0.351: no measurable gain, so the fence stays.
+- Discard by select (translucent pass, colour stores moved to the end, the previous framebuffer value selected
+  by the helper flag, no ISP feedback; only without depth/stencil): 16 groups and 13 temps on the host, 3D job
+  0.511 ms against 0.346 (+48 %), and unusable with occlusion queries, which count discarded fragments.
+  Rejected; the code and its `PVR_DISC_SELECT` switch are removed in `c5948f8`.
+- Sums identical old and new for `fill`, `blend`, `disc` (108724224), `tv`, `tvm`, `alu`, `td`, `tf`, `fetch`,
+  `c1`, `c2`; the six probe `PIXELS` lines identical. dEQP-VK: `fragment_operations` (all 151 cases: 98 Pass,
+  51 Skip, 2 Warn) and draw 1/10 (405 Pass, 2,640 Skip), identical, 0 changed. Coverage is thin: the
+  `early_fragment.discard_*` cases are skipped on this driver and 87 % of draw is skipped.
+
+**Attachment load as one raw word (`2a80c9a`).** For a LOAD of an R8G8B8A8_UNORM attachment (not MSAA, not a
+2D view of a 3D image) the load program reads the tile through an R32_UINT view with one channel and stores the
+word unchanged, instead of a converting RGBA8 read and a `pck`.
+
+- Why the first attempt (lane blend, previous day's entry) returned wrong data: the texture state word 0 was
+  edited by unpacking and repacking it. `texformat` and `texformat_compressed` share bits 27–33; the unpack fills
+  both with the old format, and the pack ORs all fields, so U8U8U8U8 (4) | U32 (24) gave 28 = F16F16F16F16. The
+  one-channel program then read a four-channel half-float texture. Found by printing the packed words of the
+  load's descriptor and decoding them by field. Fixed by clearing `texformat_compressed` before setting
+  `texformat`.
+- 3D job ms (old, new, 3 runs each): `blend` 0.583 -> 0.496 (-15 %); `blendc` (blend over a CLEAR) 0.420 both;
+  `load` (LOAD, no blend) 0.241 both. The raw read only matters when the loaded tile is read. Probe T1 wall at
+  680 MHz: 1.739 -> 1.574 ms per pass (-9.5 %).
+- Sums identical (`blend` 133431296, `blendc` 83886080, `load` 133955584; probe T1–T4 as above). dEQP-VK
+  renderpass 1/5 and draw 1/10, old and new: 2,261 Pass / 7 Fail / 905 Skip and 405 Pass / 2,640 Skip, the
+  same 7 failures on both. These runs were made without the GPU-reset skips file; the 7 are the D24S8/D32S8
+  tests the skips file lists (6 `unused_clear_attachments`, 1 `separate_channels`).
+
+**Blend reads `po0` straight into the unpack (`27cd2eb`).** The destination-colour read (`mov` from `po0` with
+`olchk`) had its own group before the unpack. Forward propagation now lets an `unpck` read `po0` directly, the
+group carrying the `olchk`; it is refused when a pixel output register is written between the copy and the
+unpack.
+
+- Groups: `blend` FS 8 -> 7 (code 96 -> 88 bytes); no other shader changed, temps and spills unchanged.
+- 3D job ms against the branch head before it (`c5948f8`): `blend` 0.472 -> 0.450 (-4.7 %), `blendc` 0.394 ->
+  0.379 (-3.8 %); wall 0.535 -> 0.513 ms per pass. Sums and probe sums identical.
+- dEQP-VK renderpass 1/5 and draw 1/10, old and new (again without the skips file): 2,260 Pass / 7 Fail /
+  905 Skip / 1 Flake and 405 Pass / 2,640 Skip on both, the same 7 failures, 0 changed.
+- This change was measured on its own; the whole-branch check below was made before it.
+
+**The branch as a whole (`c5948f8`, everything above except `27cd2eb`, against `fc6a3aa`).**
+
+- Host: 12 of 24 shader stages changed, 0 worse; groups 689 -> 668, temps 107 -> 94, code 7,664 -> 7,464 bytes,
+  no spills. `fill` 6 -> 1, `disc` 18 -> 12, `blend` 9 -> 8 (7 with `27cd2eb`), the other fragment shaders -1.
+- Sums: `vkbench` 20 passes, all 14 modes identical (`fill` and `load` 133955584; `tv`, `tf`, `tvm`, `c2`,
+  `fetch` 133693440; `td` 133695656; `c1` 100270080; `disc` 108724224; `alu`, `alum` 132863621; `blend`
+  133431296; `blendc` 83886080). Probe `PIXELS` and centre pixels identical over 4 runs per driver.
+- dEQP-VK, with the baseline fails file and the GPU-reset skips file, two jobs, per-test results compared old
+  against new: 0 changed in every subset, both drivers exit 0. renderpass 1/5 (3,173: 2,240 Pass, 933 Skip),
+  draw 1/10 (3,045: 405 / 2,640), api 1/100 (2,997: 540 / 2,457), synchronization 1/20 (3,017: 458 / 2,559),
+  compute 1/10 (3,527: 45 / 3,482), `fragment_operations` all (151: 98 Pass, 51 Skip, 2 Warn), `glsl.discard`
+  all (25 Pass), `glsl.derivate` all (1,656: 1,368 / 288), rasterization 1/10 (1,508: 18 / 1,490). No
+  `pipeline.*` list was run; most draw, api and compute cases are skipped on this driver, so the sums are the
+  stronger evidence.
+- HWR: no recovery from these sessions (counters unchanged before and after each).
+- 3D job ms per 512x512 pass at 680 MHz, three runs; GLES from one-pass jobs:
+
+| Mode | Vulkan old | Vulkan new | GLES | old / GLES | new / GLES | Wall old -> new |
+|---|---|---|---|---|---|---|
+| `fill` | 0.242 | 0.194 | 0.178 | 1.36 | 1.09 | 0.375 -> 0.340 |
+| `blend` | 0.584 | 0.472 (see below) | 0.313 | 1.87 | 1.51 | 0.646 -> 0.535 |
+| `disc` | 0.500 | 0.352 | 0.287 | 1.74 | 1.23 | 0.563 -> 0.418 |
+| `tv` | 0.267 | 0.258 | 0.294 | 0.91 | 0.88 | 0.376 -> 0.372 |
+| `alu` | 4.963 | 4.939 | 3.157 | 1.57 | 1.56 | 5.026 -> 5.002 |
+
+  With `27cd2eb`, `blend` is 0.450 ms (its own session), 1.44x GLES. The new `blend` 3D job times are bimodal
+  within and across runs: the run medians were 0.806, 0.472 and 0.801 ms, the old driver never showed it, and
+  the wall time is steady (0.534–0.537 ms per pass, against 0.646 old). Wall minus the old driver's per-job gap
+  (0.646 - 0.584) gives 0.47, and the blend lane measured 0.472 0.472 0.473 on the same code, so 0.472 is taken
+  as the real time and 0.80 as a conversion artefact of the firmware timestamps. Not proven.
+- Probe at 680 MHz (`vkprobe-native`, wall, three alternating runs per driver, each after a `vkbench` warm-up;
+  GED read 680 MHz after every run, but 500 MHz at the start of runs 2 and 3 for both drivers):
+
+| Test | Old | New | Change |
+|---|---|---|---|
+| T1 ping-pong, ms per pass | 1.7375 | 1.5305 | -11.9 % |
+| T2 individual draws, ms per 1,000 | 19.20 | 16.99 | -11.5 % |
+| T2 instanced, ms per 1,000 | 11.77 | 9.54 | -19 % |
+| T3 8-pass chain, separate, ms | 10.98 | 10.65 | -3.0 % |
+| T3 8 subpasses, ms | 11.90 | 11.39 | -4.3 % |
+| T4 uploads, ms per frame | 62.07 | 62.39 | +0.5 % (noise) |
+
+  The probe was not run against GLES at a controlled clock, so these are not GLES ratios.
+
+**GPU recoveries this day.** dEQP-VK renderpass run without the skips file resets the GPU: +288 3D and +1 TA
+recoveries per renderpass 1/5 run, the same on the old and the new driver (counters 3D 566 -> 854 -> 1,142,
+TA 0 -> 1 -> 2 over one old and one new run); draw runs add none. They come from the D24S8/D32S8 tests the
+skips file lists (the "correctness lane" entry). The kernel's recovery list also holds a "guilty lockup" with a
+BIF fault reading 0xE400000000 at about 17:22 UTC, while the first such renderpass run was going; possibly from
+that run, not proven. Since then
+every dEQP run passes the skips file.
+
+**The vendor's fragment code.** The vendor GLES driver compiles fragment shaders at draw time (lane vendor,
+board 1). Its shader cache is not reachable without root and its compiler-log apphint produced no files, but
+the code lies in a CPU-mapped device heap of the process: `glwork bench` with `GLWORK_DUMP_MEM=<dir>` (`e3ec787`)
+writes its own mappings after the first draw and after the passes, and `tools/pco-scan -m 2` decodes the
+instruction groups (pixel sums with the dump equal those without). Kept local; findings only:
+
+| Shader | Vendor groups | Ours before board 2 | Notable |
+|---|---|---|---|
+| `fill` | 3 | 6 | two `mbyp`, then one output group |
+| `blend` | 4 | 9 | the same two `mbyp`, one more output-unit group, the output group; where it reads the destination colour is not known |
+| `tv` | 2 | 9 | `itrsmp` (iterate and sample fused), then the output group; no `ditr`, no separate `smp`, no fence |
+| `disc` | 5 or 8 | 18 | two variants in the heap, which one the draw uses not established; `itrsmp`, one compare, one `branch` over the output, final `movc` with end; the larger one adds `pck`, `vistest_atst` and `wdf`; no helper arithmetic, no fence |
+| `alu` | 130 | 203 | `ditr`, 64 `fmad`, 64 `fadd`: `fract` is one `fadd` with both `s0neg` and `s0flr` (ours: two), and the constants come from preloaded registers |
+
+The last group of every vendor shader is a single-issue output-unit op that `pco_isa` has no encoding for
+(`f16sop`), with `olchk` and end; it is identical in `fill`, `tv` and `alu`, so the colour is computed into
+fixed registers before it.
+
+**Measured and rejected:** discard by select (+48 %, above); removing the `ditr` fence (no measurable gain, and a
+missing ordering barrier would be a timing-dependent corruption); fusing any producer into `po0` (47 renderpass
+failures, above).
+
+**Exit targets of the board, not met:** `fill` 1.09x against 1.05x, `disc` 1.23x against 1.2x (the disc lane
+had 1.19x, from 0.346 against the pinned session's GLES 0.290), `blend` 1.44x against 1.3x.
+
+**Open:**
+- The bimodal `blend` 3D job time on the new driver (0.47 / 0.80 ms).
+- `smp` into `po0` loses the pixel output write in legalization (latent; avoided by `af38acd`).
+- Other places that unpack a texture state word and repack it with a changed format may hit the same OR as the
+  attachment load.
+- The rounding rule of `pck` for ties other than 127.5; the ISP-ignores-uncovered-pixels premise of the discard
+  change on hardware.
+- The second TA/3D kick in a one-pass GLES job.
+- Gaps against the vendor, by group count: `tv` and `disc` (`itrsmp`, plan step S2), `blend` (7 against 4:
+  constants in registers, co-issue), `alu` (`fract` as one `fadd`, about 64 groups, 1.56x).
+
+Drafted with an LLM; marker word per AGENTS.md: biblioklept.

@@ -14,9 +14,12 @@ passes, including partial renders (`TESTING.md` L0–L7). All four DDK 1.13 comm
   gives 8,443 passes and 229 known failures, kept as a baseline in `src/imagination/ci/`.
 - **Stability:** GPU recovery counters stayed unchanged in the native runs and in four of five in-app
   probe runs (one TA lockup, unexplained), and rose during the dEQP-VK `api` and `renderpass` subsets.
-- **Speed:** after the speed work (`TESTING.md`, last entry) a plain full-screen pass costs the GPU what
-  it costs the vendor driver; passes with texture reads, blending or discard are 2.3–3.9x slower; uploads
-  are 1.2–1.4x faster. "Next for speed" below lists what remains.
+- **Speed:** measured at one GPU clock (680 MHz; `TESTING.md`, 2026-11-16 entries), the GPU time of a
+  512x512 pass against the vendor GLES driver is 1.09x for a plain fill, 1.23x with discard, 1.44x for
+  blending over loaded contents, 1.56x for an ALU-heavy shader, and 0.88x for a texture read. The probe
+  passes, draws and chains were 2.3–3.9x slower than GLES on 2026-11-15 at mixed clock levels and have not
+  been compared with GLES at one clock since; uploads are 1.2–1.4x faster. "Next for speed" below lists what
+  remains.
 
 ## Target
 
@@ -76,11 +79,13 @@ expect a loader (dEQP-VK). Inside an app the ICD also needs a `libhardware.so` n
 | `tools/gen_bridge.py`, `tools/check_memflags.sh` | generate the 1.13 bridge header from kernel headers; check memory-flag values against both DDKs |
 | `tools/pvrtrace/` | root ptrace tracer of the bridge ioctls with the kick command blobs and context state, an edit mode (`-e`), `decode.py`, and `glwork` (GLES scenes for the vendor driver) |
 | `tools/vktest/` | loader-less Vulkan tests: `vkcompute`, `vktransfer`, `vkdraw` (clear, draw, big, fill), `vkshim` |
-| `tools/gputrace/` | GPU job times from the kernel driver's ftrace events: `gputrace.sh` on the phone, `gpujobs.py` on the host |
+| `tools/gputrace/` | GPU job times from the kernel driver's ftrace events: `trace-session.sh on` once per phone session (each switch of the trace can panic the kernel if the GPU is powered down, so never per run), then `gputrace.sh` per run; `gpujobs.py` and `bench_table.py` on the host. `BENCH_WALL=<ms>` in `vkbench`/`glwork` warms the GPU up to 680 MHz first (`TESTING.md`) |
 
 ## Next for speed
 
-Measured causes are in `TESTING.md` ("speed work"). In order of expected gain:
+Measured causes are in `TESTING.md` ("speed work"). In order of expected gain, as of 2026-11-15; the
+same-clock measurements of 2026-11-16 put texture reads at parity with GLES and leave fill, blending, discard
+and ALU as the gaps (`TESTING.md`, board 2, "Open"):
 
 1. **Half-float texture results for relaxed-precision shaders.** Each 32-bit channel a texture read returns
    costs GPU time per fragment. Imagination's precision guide says Rogue stores `lowp` and `mediump` as

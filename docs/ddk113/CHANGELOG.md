@@ -126,3 +126,46 @@ One entry per change, newest last. Every entry names its evidence. Every commit 
 - **docs:** README brought up to date (status, building, loading, tools, what is next for speed); stale
   "not yet" notes in `TESTING.md` and `CAPTURE.md` replaced with what happened since. Drafted with an LLM;
   marker word per AGENTS.md: biblioklept.
+- **Constant colour folded, final pack into the output register (`ef78b60`):** four constant channels packed to
+  RGBA8/BGRA8 UNORM become one immediate (the 127.5 tie rounds to 128, proven by the `vkbench fill` sum
+  133955584; other ties stay at run time), and back-propagation into `po0` is enabled. Evidence: `pco-stats`
+  `fill` FS 6 -> 1 group, corpus 689 -> 674, 0 shaders worse; `fill` 3D job 0.241 -> 0.193 ms at 680 MHz.
+- **Back-propagation into `po0` restricted to `pck` and `movi32` (`af38acd`):** the unrestricted version failed
+  47 dEQP-VK renderpass tests (an internal shader's `smp` moved into `po0` lost its output write in
+  legalization). Evidence: renderpass 1/5 and draw 1/10 0 changed against `fc6a3aa`; `pco-stats` gains
+  unchanged; sums identical (`TESTING.md`, board 2).
+- **Discard (`0366abd`):** no started-as-helper term when only the ISP feedback reads the helper flag, and a
+  single-compare discard condition written straight to `p0` (new op `cmpp`). `PCO_DEBUG=no_fence` / `fence1`
+  experiments for the `ditr` fence, off by default. Evidence: `disc` FS 18 -> 12 groups; 3D job 0.495 -> 0.346
+  ms (-30 %) at 680 MHz; fence variants no faster (0.345, 0.351), so the fence stays; `vkbench` and probe sums
+  identical; `fragment_operations` and draw 1/10 0 changed.
+- **Attachment load as one raw R32_UINT word (`2a80c9a`):** RGBA8 UNORM LOADs (not MSAA, not 2D views of 3D)
+  read the tile as one 32-bit word and store it unchanged. The texture state word 0 is repacked with
+  `texformat_compressed` cleared: the unpack fills it and `texformat` (same bits 27–33) with the old format and
+  the pack ORs them (4 | 24 = 28, F16F16F16F16), which was why the earlier attempt returned wrong data.
+  Evidence: `blend` 3D job 0.583 -> 0.496 ms (-15 %), probe T1 1.739 -> 1.574 ms per pass, `blendc` and `load`
+  unchanged; sums identical; renderpass 1/5 and draw 1/10 identical to the old driver.
+- **Measurement tools (`8b3af25`, `e52992c`):** `BENCH_WALL=<ms>` in `vkbench` and `glwork bench` warms up
+  until the GED clock reads 680 MHz plus `<ms>`, then times N passes back to back and prints wall ms per pass
+  with the clock level before and after. `gputrace.sh` no longer writes `/proc/pvr/apphint/EnableFTraceGPU`
+  and refuses unless it reads `Y`; `trace-session.sh on|off` writes it once per session under a GPU load.
+  Evidence: the phone kernel-panicked in the apphint write path (`_SetClock` -> `RGXTimeCorrBegin` reads a GPU
+  register without the power lock) while the old script toggled it per run; firmware times change unit with
+  the clock level (rates 1.700 / 0.735 / 0.588, 1.000 at a fixed clock); every timed run since read 680 MHz
+  before and after, pixel sums unchanged in wall mode (`TESTING.md`, 2026-11-16, clock and measurement).
+- **Vendor fragment code readable (`e3ec787`):** `glwork bench` with `GLWORK_DUMP_MEM=<dir>` writes its own
+  readable mappings, where the vendor GLES driver puts its draw-time fragment code; `tools/pco-scan -m N` sets
+  the minimum chain length (2 for the 2- and 3-group vendor shaders). Evidence: `test_scan.py` passes (the
+  2-group tail of our `tv` shader is found with `-m 2`, not with the default); pixel sums the same with and
+  without the dump. No vendor code or dumps are committed; findings in `TESTING.md` (board 2) are counts and op
+  names only.
+- **Discard-by-select experiment removed (`c5948f8`, with its `PVR_DISC_SELECT` switch):** discard by selecting the previous framebuffer value in a
+  translucent pass. Evidence: 3D job 0.511 against 0.346 ms (+48 %) on `vkbench disc`, and it cannot be used
+  with occlusion queries.
+- **Blend reads `po0` straight into the unpack (`27cd2eb`):** forward propagation lets an `unpck` read the pixel
+  output register, refused when `po0` is written in between. Evidence: `blend` FS 8 -> 7 groups, no other
+  shader changed; `blend` 3D job 0.472 -> 0.450 ms, `blendc` 0.394 -> 0.379; sums identical; renderpass 1/5 and
+  draw 1/10 0 changed.
+- **docs:** `TESTING.md` entries for the clock and measurement method and for board 2; the speed status and the
+  `tools/gputrace` row of `docs/ddk113/README.md` updated to them; `tools/gputrace/bench.sh` refuses to start
+  unless the trace is already on. Drafted with an LLM; marker word per AGENTS.md: biblioklept.
