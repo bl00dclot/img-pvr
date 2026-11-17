@@ -620,6 +620,13 @@ err_free_vdm_state:
    /* Cast away the const :( */
    vk_free(&device->vk.alloc, (void *)state->vdm_words);
 
+   /* XCLIPSE: the dummy-object words and their buffers (same as the finish function). */
+   if (state->invis_vdm_words) {
+      vk_free(&device->vk.alloc, (void *)state->invis_vdm_words);
+      pvr_bo_suballoc_free(state->invis_pds.pvr_bo);
+      pvr_bo_suballoc_free(state->invis_vertices_bo);
+   }
+
 err_free_pds_program:
    pvr_bo_suballoc_free(state->pds.pvr_bo);
 

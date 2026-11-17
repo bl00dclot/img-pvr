@@ -603,6 +603,10 @@ int main(int argc, char **argv)
    unsigned pass_no = 0;
    /* BENCH_NODRAW=1: render passes without a draw (clear only), the case the driver's dummy object exists for. */
    const int nodraw = getenv("BENCH_NODRAW") != NULL;
+   /* BENCH_NODRAW=2: draw in the first pass only; the others load (mode load) or clear and store the whole
+    * render area with no draw, so the final sum shows whether tiles the dummy object does not touch keep their
+    * contents. */
+   const int draw_first = nodraw && atoi(getenv("BENCH_NODRAW")) == 2;
 
    VkShaderModuleCreateInfo vsi = { .sType = VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO,
                                     .codeSize = sizeof(spv_vert_vert), .pCode = spv_vert_vert };
@@ -756,7 +760,7 @@ int main(int argc, char **argv)
       vkCmdBindDescriptorSets(cb, VK_PIPELINE_BIND_POINT_GRAPHICS, pl, 0, 1, &set, udyn ? 1 : 0, &dyn_off); \
       if (u128p)                                                                         \
          vkCmdPushConstants(cb, pl, VK_SHADER_STAGE_FRAGMENT_BIT, 0, 128, u128);         \
-      if (!nodraw)                                                                       \
+      if (!nodraw || (draw_first && pass_no == 1))                                       \
          vkCmdDraw(cb, 3, 1, 0, 0);                                                      \
       vkCmdEndRenderPass(cb);                                                            \
    } while (0)

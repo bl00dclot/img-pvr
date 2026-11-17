@@ -225,7 +225,16 @@ static inline bool coissue_ref_ok(pco_ref ref, bool is_dest, bool is_p1)
 
    case PCO_REG_CLASS_VTXIN:
    case PCO_REG_CLASS_SHARED:
+      /* XCLIPSE: the same restriction, because no shader run on the device has
+       * read these as S3-S5 (the bench and probe shaders, whose pixel sums are
+       * checked, only use constants there); the bank encoding for them is
+       * unproven. */
+      return !is_dest && !is_p1;
+
    case PCO_REG_CLASS_CONST:
+      /* XCLIPSE: constants are proven in S3-S5: the vkbench blend/alu/tv/c1/c2
+       * and probe shaders read them there (sc0, sc64, sc75-77, sc84, sc141) and
+       * their pixel sums are unchanged. */
       return !is_dest;
 
    default:

@@ -922,6 +922,10 @@ VkResult PVR_PER_ARCH(srv_winsys_render_submit)(
       frag_sync_update_value = ++current_sync_value;
    }
 
+   /* XCLIPSE: the queue drains at the GPU's pace (tens of ms of queued work per context), so 10 s of
+    * RETRY answers means a hung GPU or firmware: report device loss instead of spinning for ever. */
+   const int64_t retry_deadline = os_time_get_nano() + 10000000000ll;
+
    do {
       /* The fw allows the ZS and MSAA scratch buffers to be lazily allocated in
        * which case we need to provide a status update (i.e. if they are
@@ -984,8 +988,13 @@ VkResult PVR_PER_ARCH(srv_winsys_render_submit)(
        * about 15 times per kick and the submitting thread used a whole core (0.31 ms of CPU per 0.34 ms
        * render). Waiting a little between tries costs nothing: the queue holds tens of ms of work.
        */
-      if (result == VK_NOT_READY)
+      if (result == VK_NOT_READY) {
+         if (os_time_get_nano() > retry_deadline) {
+            result = VK_ERROR_DEVICE_LOST;
+            break;
+         }
          os_time_sleep(100);
+      }
    } while (result == VK_NOT_READY);
 
    if (result != VK_SUCCESS)
