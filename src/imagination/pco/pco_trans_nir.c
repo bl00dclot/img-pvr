@@ -4730,7 +4730,7 @@ static void trans_if(trans_ctx *tctx,
    pif->cf_node.parent = parent_cf_node;
    list_addtail(&pif->cf_node.link, cf_node_list);
 
-   pif->uniform_cond = !nif->condition.ssa->divergent;
+   pif->uniform_cond = !nir_src_is_divergent(&nif->condition);
    pif->cond = pco_ref_nir_src_t(&nif->condition, tctx);
    assert(pco_ref_is_scalar(pif->cond));
 
