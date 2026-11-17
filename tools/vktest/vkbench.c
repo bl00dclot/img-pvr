@@ -459,8 +459,12 @@ int main(int argc, char **argv)
          if (ubo) {
             ubo_vkbuf = ub;
             /* UBO_TAILZERO=<bytes>: zero the buffer from this offset on (the reference of UBO_RANGE). */
-            if (getenv("UBO_TAILZERO"))
-               memset((uint8_t *)hp + atoi(getenv("UBO_TAILZERO")), 0, usize - atoi(getenv("UBO_TAILZERO")));
+            if (getenv("UBO_TAILZERO")) {
+               /* clamped: an offset past the buffer would make the length negative (a huge size_t) */
+               long tz = atol(getenv("UBO_TAILZERO"));
+               tz = tz < 0 ? 0 : tz > (long)usize ? (long)usize : tz;
+               memset((uint8_t *)hp + tz, 0, usize - tz);
+            }
          }
       }
       VkDescriptorBufferInfo dbi = { ub, 0, VK_WHOLE_SIZE };
