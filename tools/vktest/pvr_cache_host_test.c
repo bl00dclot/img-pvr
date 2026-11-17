@@ -108,6 +108,7 @@ struct fake_layout {
    struct vk_pipeline_layout l;
    struct vk_descriptor_set_layout *p[2];
    struct pvr_descriptor_set_layout sl[2];
+   struct pvr_descriptor_set_layout_binding bind[2][4];
    VkPushConstantRange pc;
 };
 
@@ -115,6 +116,8 @@ static void fake_layout_fix(struct fake_layout *f)
 {
    f->l.set_layouts[0] = &f->sl[0].vk;
    f->l.set_layouts[1] = &f->sl[1].vk;
+   f->sl[0].bindings = f->bind[0];
+   f->sl[1].bindings = f->bind[1];
 }
 
 static void fake_layout_init(struct fake_layout *f, uint32_t stages)
@@ -128,7 +131,24 @@ static void fake_layout_init(struct fake_layout *f, uint32_t stages)
       f->sl[i].size = 64;
       f->sl[i].dynamic_buffer_count = i;
       f->sl[i].stage_flags = stages;
+      f->sl[i].bindings = f->bind[i];
    }
+   /* XCLIPSE: the binding types the UBO ranges are checked against: set 0 has a 3-element UBO (0), an inline block (1),
+    * a combined image sampler (2); set 1 has a UBO (0), a storage buffer (1), a sampler (2), a dynamic UBO (3). */
+   f->bind[0][0] = (struct pvr_descriptor_set_layout_binding){ .type = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,
+                                                               .descriptor_count = 3, .dynamic_buffer_idx = ~0u };
+   f->bind[0][1] = (struct pvr_descriptor_set_layout_binding){ .type = VK_DESCRIPTOR_TYPE_INLINE_UNIFORM_BLOCK,
+                                                               .descriptor_count = 16, .dynamic_buffer_idx = ~0u };
+   f->bind[0][2] = (struct pvr_descriptor_set_layout_binding){ .type = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+                                                               .descriptor_count = 1, .dynamic_buffer_idx = ~0u };
+   f->bind[1][0] = (struct pvr_descriptor_set_layout_binding){ .type = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,
+                                                               .descriptor_count = 1, .dynamic_buffer_idx = ~0u };
+   f->bind[1][1] = (struct pvr_descriptor_set_layout_binding){ .type = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
+                                                               .descriptor_count = 1, .dynamic_buffer_idx = ~0u };
+   f->bind[1][2] = (struct pvr_descriptor_set_layout_binding){ .type = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+                                                               .descriptor_count = 1, .dynamic_buffer_idx = ~0u };
+   f->bind[1][3] = (struct pvr_descriptor_set_layout_binding){ .type = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER_DYNAMIC,
+                                                               .descriptor_count = 1, .dynamic_buffer_idx = 0 };
    f->pc = (VkPushConstantRange){ .stageFlags = VK_SHADER_STAGE_ALL, .offset = 0, .size = 16 };
    f->l.push_range_count = 1;
    f->l.push_ranges[0] = f->pc;
@@ -166,6 +186,15 @@ static void fill_common(pco_data *d, unsigned stage_bit, struct fake_layout *f)
       if (f->sl[u].dynamic_buffer_count)
          s->dynamic_range = (pco_range){ 24, 4 * f->sl[u].dynamic_buffer_count, { 0 } };
    }
+
+   /* XCLIPSE: two promoted UBO ranges (shareds 80: the registers 64..79 are theirs): element 2 of set 0 binding 0 and the
+    * dynamic UBO of set 1, when the stage has the set. */
+   if (c->desc_sets[0].used)
+      c->ubo_ranges[c->ubo_range_count++] = (pco_ubo_range){ .desc_set = 0, .binding = 0, .elem = 2, .offset = 4,
+                                                             .count = 8, .start = 64, .uses = 5 };
+   if (c->desc_sets[1].used)
+      c->ubo_ranges[c->ubo_range_count++] = (pco_ubo_range){ .desc_set = 1, .binding = 3, .elem = 0, .offset = 0,
+                                                             .count = 8, .start = 72, .uses = 9 };
 }
 
 static void fill_vs(pco_data *d, struct fake_layout *f)
@@ -365,6 +394,27 @@ static void consumer_invariants(const struct pvr_cached_shaders *obj, enum shape
       }
 
       EXPECT(d->common.push_consts.range.count * 4 <= PVR_MAX_PUSH_CONSTANTS_SIZE, "push range");
+
+      /* XCLIPSE: what pvr_setup_descriptor_mappings relies on for every promoted UBO range. */
+      EXPECT(d->common.ubo_range_count <= PCO_UBO_PUSH_MAX_RANGES, "range count");
+      unsigned total = 0;
+      for (unsigned u = 0; u < d->common.ubo_range_count && u < PCO_UBO_PUSH_MAX_RANGES; u++) {
+         const pco_ubo_range *r = &d->common.ubo_ranges[u];
+         const struct pvr_descriptor_set_layout *sl = r->desc_set < f->l.set_count ? &f->sl[r->desc_set] : NULL;
+
+         EXPECT(sl && (sl->stage_flags & BITFIELD_BIT(ms)) && (gfx || s == 0), "range: set %u not in the stage", r->desc_set);
+         if (!sl || r->binding >= sl->binding_count)
+            { EXPECT(!sl || r->binding < sl->binding_count, "range: binding %u", r->binding); continue; }
+         const struct pvr_descriptor_set_layout_binding *b = &sl->bindings[r->binding];
+         EXPECT(b->type == VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER || b->type == VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER_DYNAMIC,
+                "range: binding type %d", b->type);
+         EXPECT(r->elem < b->descriptor_count, "range: element %u", r->elem);
+         EXPECT(r->count > 0 && r->count <= 256 && r->offset <= 256 - r->count, "range: dwords %u+%u", r->offset, r->count);
+         total += r->count;
+         EXPECT(total <= 256, "range: total %u", total);
+         EXPECT(r->start < d->common.shareds && r->count <= d->common.shareds - r->start && d->common.shareds <= 8192,
+                "range: registers %u+%u of %u", r->start, r->count, d->common.shareds);
+      }
    }
 
    if (!gfx)
@@ -639,6 +689,125 @@ static void forged_layouts(void)
    pvr_cached_shaders_unref(dev, o);
 }
 
+/* Forgery number i of the list below applied to a stage's data; returns what it did, NULL past the end. */
+enum { FORGE_BASE = __COUNTER__ };
+#define M(w, ...) case __COUNTER__ - FORGE_BASE - 1: { __VA_ARGS__; } return w
+static const char *forge_ubo_range(unsigned i, pco_common_data *c)
+{
+   switch (i) {
+   M("set 7", c->ubo_ranges[0].desc_set = 7);
+   M("set 2 (layout has 2)", c->ubo_ranges[0].desc_set = 2);
+   M("binding 4095", c->ubo_ranges[0].binding = 4095);
+   M("binding 3 of set 0 (past the set)", c->ubo_ranges[0].binding = 3);
+   M("binding is an inline block", c->ubo_ranges[0].binding = 1);
+   M("binding is a sampler", c->ubo_ranges[0].binding = 2);
+   M("binding of set 1 is a storage buffer", c->ubo_ranges[1].binding = 1);
+   M("element 3 of 3", c->ubo_ranges[0].elem = 3);
+   M("element 0xffffffff (elem * stride wraps)", c->ubo_ranges[0].elem = ~0u);
+   M("dynamic element 1 of 1", c->ubo_ranges[1].elem = 1);
+   M("zero dwords", c->ubo_ranges[0].count = 0);
+   M("257 dwords", c->ubo_ranges[0].count = 257; c->ubo_ranges[0].offset = 0);
+   M("4096 dwords (BSIZE overflow)", c->ubo_ranges[0].count = 4096; c->ubo_ranges[0].offset = 0);
+   M("offset 256", c->ubo_ranges[0].offset = 256);
+   M("offset + count past the window", c->ubo_ranges[0].offset = 250; c->ubo_ranges[0].count = 8);
+   M("offset + count wraps 32 bits", c->ubo_ranges[0].offset = 0xfffffffe; c->ubo_ranges[0].count = 4);
+   M("total 400 dwords", c->ubo_ranges[0].count = 200; c->ubo_ranges[0].offset = 0;
+                            c->ubo_ranges[1].count = 200; c->ubo_ranges[1].offset = 0);
+   M("start past the shared registers", c->ubo_ranges[0].start = 80);
+   M("start 8191 (AO field)", c->ubo_ranges[0].start = 8191);
+   M("start + count past shareds", c->ubo_ranges[0].start = 73);
+   M("start 0xfffffff8 (start + count wraps)", c->ubo_ranges[0].start = 0xfffffff8u);
+   M("shareds 8193", c->shareds = 8193);
+   M("9 ranges", c->ubo_range_count = 9);
+   }
+#undef M
+   return NULL;
+}
+
+/* XCLIPSE: forged UBO ranges: a blob that is well formed (every field in its own bound) whose ranges do not fit the
+ * layout must not pass the use-time check; each of them would index or DMA out of bounds in the draw code. */
+static void forged_ubo_ranges(void)
+{
+   struct fake_layout f;
+   fake_layout_init(&f, ~0u);
+
+   for (unsigned i = 0; forge_ubo_range(i, &(pco_common_data){ 0 }); i++) {
+      struct pvr_cached_shaders *o = make_object(GFX_FS, &f, false);
+      EXPECT(pvr_cached_shaders_check_graphics(o, &f.l, true, false), "ranges baseline");
+      EXPECT(o->stage[0].data.common.ubo_range_count == 2 && o->stage[1].data.common.ubo_range_count == 2,
+             "baseline has no ranges");
+      const char *what = forge_ubo_range(i, &o->stage[0].data.common);
+      EXPECT(!pvr_cached_shaders_check_graphics(o, &f.l, true, false), "forged range accepted (VS): %s", what);
+      pvr_cached_shaders_unref(dev, o);
+
+      o = make_object(GFX_FS, &f, false);
+      what = forge_ubo_range(i, &o->stage[1].data.common);
+      EXPECT(!pvr_cached_shaders_check_graphics(o, &f.l, true, false), "forged range accepted (FS): %s", what);
+      pvr_cached_shaders_unref(dev, o);
+
+      o = make_object(COMPUTE, &f, false);
+      EXPECT(pvr_cached_shaders_check_compute(o, &f.l), "compute ranges baseline");
+      what = forge_ubo_range(i, &o->stage[0].data.common);
+      EXPECT(!pvr_cached_shaders_check_compute(o, &f.l), "forged range accepted (CS): %s", what);
+      pvr_cached_shaders_unref(dev, o);
+   }
+
+   /* Ranges with no layout set to match, or for a stage the set is not visible to. */
+   struct fake_layout g = f;
+   fake_layout_fix(&g);
+   struct pvr_cached_shaders *o = make_object(GFX_FS, &f, false);
+   g.sl[0].stage_flags = BITFIELD_BIT(MESA_SHADER_COMPUTE);
+   EXPECT(!pvr_cached_shaders_check_graphics(o, &g.l, true, false), "range of a set the stage cannot see");
+   g = f; fake_layout_fix(&g); g.l.set_layouts[1] = NULL;
+   EXPECT(!pvr_cached_shaders_check_graphics(o, &g.l, true, false), "range of a null set layout");
+   g = f; fake_layout_fix(&g); g.bind[0][0].type = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+   EXPECT(!pvr_cached_shaders_check_graphics(o, &g.l, true, false), "range of a binding the layout made a storage buffer");
+   g = f; fake_layout_fix(&g); g.bind[0][0].descriptor_count = 2;
+   EXPECT(!pvr_cached_shaders_check_graphics(o, &g.l, true, false), "range element past a smaller array");
+   pvr_cached_shaders_unref(dev, o);
+}
+
+/* XCLIPSE: pco_fit_ubo_ranges(): the ranges end inside the limit, the least dense go first, nothing else moves. */
+static void fit_ranges(void)
+{
+   pco_common_data c;
+
+   memset(&c, 0, sizeof(c));
+   c.shareds = 10;
+   pco_fit_ubo_ranges(&c, 100);
+   EXPECT(c.shareds == 10 && !c.ubo_range_count, "no ranges: untouched");
+
+   c.ubo_range_count = 3;
+   c.ubo_ranges[0] = (pco_ubo_range){ .count = 16, .uses = 100 }; /* 6.25 per dword */
+   c.ubo_ranges[1] = (pco_ubo_range){ .count = 32, .uses = 33 };  /* 1.03 */
+   c.ubo_ranges[2] = (pco_ubo_range){ .count = 8, .uses = 40 };   /* 5 */
+   pco_fit_ubo_ranges(&c, 100);
+   EXPECT(c.ubo_range_count == 3 && c.ubo_ranges[0].start == 12 && c.ubo_ranges[1].start == 28 &&
+             c.ubo_ranges[2].start == 60 && c.shareds == 68, "fits: aligned to 4, in order (start %u %u %u, shareds %u)",
+          c.ubo_ranges[0].start, c.ubo_ranges[1].start, c.ubo_ranges[2].start, c.shareds);
+
+   memset(&c, 0, sizeof(c));
+   c.shareds = 10;
+   c.ubo_range_count = 3;
+   c.ubo_ranges[0] = (pco_ubo_range){ .count = 16, .uses = 100 };
+   c.ubo_ranges[1] = (pco_ubo_range){ .count = 32, .uses = 33 };
+   c.ubo_ranges[2] = (pco_ubo_range){ .count = 8, .uses = 40 };
+   pco_fit_ubo_ranges(&c, 40); /* 12 + 56 does not fit; without the 32 it does */
+   EXPECT(c.ubo_range_count == 2 && c.ubo_ranges[0].count == 16 && c.ubo_ranges[1].count == 8 && c.shareds == 36 &&
+             c.ubo_ranges[0].start == 12 && c.ubo_ranges[1].start == 28,
+          "drops the least dense (count %u, shareds %u)", c.ubo_range_count, c.shareds);
+
+   pco_fit_ubo_ranges(&c, 11); /* nothing fits: all dropped, shareds back to the allocation without the ranges */
+   EXPECT(c.ubo_range_count == 0 && c.shareds == 36, "all dropped (count %u shareds %u)", c.ubo_range_count, c.shareds);
+
+   memset(&c, 0, sizeof(c));
+   c.shareds = 2000;
+   c.ubo_range_count = 1;
+   c.ubo_ranges[0] = (pco_ubo_range){ .count = 4, .uses = 1 };
+   pco_fit_ubo_ranges(&c, 1024); /* the rest of the stage already exceeds the limit */
+   EXPECT(c.ubo_range_count == 0 && c.shareds == 2000, "stage already over the limit");
+}
+
 /* Which bytes of a stage's pco_data does the format keep? Each byte is changed in turn; if the new value
  * comes back out of serialize + deserialize (or is refused as out of bounds) the byte is data, else it is
  * padding or a field the format drops. Pointers are marked 2 and not touched. */
@@ -793,6 +962,8 @@ int main(void)
 
    cross_use();
    forged_layouts();
+   forged_ubo_ranges();
+   fit_ranges();
    fuzz_shape(GFX_FS, "graphics fs");
    fuzz_shape(GFX_NOFS, "graphics no fs");
    fuzz_shape(GFX_PASSTHROUGH, "passthrough");
