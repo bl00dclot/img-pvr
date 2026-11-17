@@ -6616,6 +6616,58 @@ static VkResult pvr_setup_descriptor_mappings(
          break;
       }
 
+      case PVR_PDS_CONST_MAP_ENTRY_TYPE_UBO_RANGE: {
+         /* XCLIPSE: DMA a promoted UBO range into shared registers when the draw runs. Only addresses, sizes and
+          * destination offsets are decided here, from the descriptor's CPU copy (a UBO cannot be updated after bind on
+          * this device, descriptorBindingUniformBufferUpdateAfterBind = false); the contents are read by the PDS at
+          * execution. Every promoted dword is defined: the dwords the bound range covers come from the buffer, the
+          * tail it does not cover (a smaller range, or a null descriptor: all of it) is DMA'd from the device's zero
+          * page by the program's first DMA of the pair, into registers disjoint from the data DMA's. */
+         const struct pvr_const_map_entry_ubo_range *ubo_entry = (struct pvr_const_map_entry_ubo_range *)entries;
+         assert(ubo_entry->range_index < data->common.ubo_range_count);
+         const pco_ubo_range *range = &data->common.ubo_ranges[ubo_entry->range_index];
+         const struct pvr_descriptor_set *descriptor_set = desc_state->sets[range->desc_set];
+         assert(descriptor_set);
+
+         const struct pvr_descriptor_set_layout_binding *binding = &descriptor_set->layout->bindings[range->binding];
+         struct pvr_buffer_descriptor buffer_desc;
+         if (binding->dynamic_buffer_idx != ~0U) {
+            buffer_desc = descriptor_set->dynamic_buffers[binding->dynamic_buffer_idx + range->elem];
+         } else {
+            memcpy(&buffer_desc,
+                   (const uint8_t *)descriptor_set->mapping + binding->offset + range->elem * binding->stride,
+                   sizeof(buffer_desc));
+         }
+
+         const uint64_t zero_addr = device->null_state.zero_bo->vma->dev_addr.addr;
+         const uint64_t range_bytes = (uint64_t)range->offset * sizeof(uint32_t);
+         uint64_t data_addr = zero_addr;
+         uint32_t covered = 0; /* dwords of the range inside the bound buffer */
+         if (buffer_desc.addr && buffer_desc.size > range_bytes) {
+            data_addr = buffer_desc.addr + buffer_desc.offset + range_bytes;
+            covered = MIN2(range->count, (buffer_desc.size - range_bytes) / sizeof(uint32_t));
+         }
+
+         /* No buffer dwords at all: the data DMA reads zeros too (it is never size 0). */
+         const uint32_t data_dwords = covered ? covered : range->count;
+         const uint32_t zero_dwords = covered ? range->count - covered : 0;
+
+         uint32_t control = dword_buffer[ubo_entry->const32_offset];
+         control &= PVR_ROGUE_PDSINST_DOUT_FIELDS_DOUTD_SRC1_BSIZE_CLRMSK;
+         PVR_WRITE(dword_buffer, control | data_dwords, ubo_entry->const32_offset, pds_info->data_size_in_dwords);
+         PVR_WRITE(qword_buffer, data_addr, ubo_entry->const_offset, pds_info->data_size_in_dwords);
+
+         control = dword_buffer[ubo_entry->zero_const32_offset];
+         control &= PVR_ROGUE_PDSINST_DOUT_FIELDS_DOUTD_SRC1_BSIZE_CLRMSK &
+                    PVR_ROGUE_PDSINST_DOUT_FIELDS_DOUTD_SRC1_AO_CLRMSK;
+         control |= zero_dwords | ((range->start + covered) << PVR_ROGUE_PDSINST_DOUT_FIELDS_DOUTD_SRC1_AO_SHIFT);
+         PVR_WRITE(dword_buffer, control, ubo_entry->zero_const32_offset, pds_info->data_size_in_dwords);
+         PVR_WRITE(qword_buffer, zero_addr, ubo_entry->zero_const_offset, pds_info->data_size_in_dwords);
+
+         entries += sizeof(*ubo_entry);
+         break;
+      }
+
       default:
          UNREACHABLE("Unsupported map entry type.");
       }

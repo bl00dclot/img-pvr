@@ -205,6 +205,25 @@ typedef struct _pco_push_const_data {
    unsigned used;
 } pco_push_const_data;
 
+/* XCLIPSE: uniform-buffer ranges promoted to shared registers (pco_nir_ubo_push.c).
+ * The compiler picks, per stage, the byte ranges of non-inline UBOs that are read at constant
+ * offsets; the driver allocates shared registers for them and the descriptor PDS program DMAs
+ * them there when the draw executes (the same way as inline uniform blocks and push constants).
+ * Budget: at most PCO_UBO_PUSH_MAX_RANGES ranges (one DMA each) and PCO_UBO_PUSH_BUDGET dwords
+ * per stage. 64 dwords is twice what the game's UBO reads (31); tiles in flight stay at 7 up to
+ * about 570 shared dwords on a GE8320 (lanes/ubopush.md). */
+#define PCO_UBO_PUSH_MAX_RANGES 8
+#define PCO_UBO_PUSH_BUDGET 64
+
+typedef struct _pco_ubo_range {
+   unsigned desc_set;
+   unsigned binding;
+   unsigned elem; /** Array element of the binding. */
+   unsigned offset; /** Dword offset into the buffer. */
+   unsigned count; /** Dwords. */
+   unsigned start; /** First shared register, set by the driver. */
+} pco_ubo_range;
+
 /** PCO common data. */
 typedef struct _pco_common_data {
    /** System value mappings. */
@@ -215,6 +234,10 @@ typedef struct _pco_common_data {
 
    /** Push constant data. */
    pco_push_const_data push_consts;
+
+   /** UBO ranges read from shared registers (XCLIPSE, see PCO_UBO_PUSH_BUDGET). */
+   unsigned ubo_range_count;
+   pco_ubo_range ubo_ranges[PCO_UBO_PUSH_MAX_RANGES];
 
    pco_range point_sampler;
    pco_range ia_sampler;
@@ -250,6 +273,24 @@ typedef struct _pco_common_data {
    bool image_sliced_view_of_3d;
    bool multiview;
 } pco_common_data;
+
+/** The promoted range holding dwords [offset, offset + count) of a UBO element, or NULL. */
+static inline const pco_ubo_range *pco_find_ubo_range(const pco_common_data *common,
+                                                      unsigned desc_set,
+                                                      unsigned binding,
+                                                      unsigned elem,
+                                                      unsigned offset,
+                                                      unsigned count)
+{
+   for (unsigned u = 0; u < common->ubo_range_count; ++u) {
+      const pco_ubo_range *r = &common->ubo_ranges[u];
+      if (r->desc_set == desc_set && r->binding == binding && r->elem == elem && offset >= r->offset &&
+          offset + count <= r->offset + r->count)
+         return r;
+   }
+
+   return NULL;
+}
 
 /** PCO shader data. */
 typedef struct _pco_data {

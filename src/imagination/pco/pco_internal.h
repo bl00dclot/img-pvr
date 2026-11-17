@@ -79,6 +79,7 @@ enum pco_debug {
    PCO_DEBUG_NO_SCHEDWDF = BITFIELD64_BIT(15),
    PCO_DEBUG_NO_IMADD_ADDR = BITFIELD64_BIT(16),
    PCO_DEBUG_NO_VREG_COALESCE = BITFIELD64_BIT(17),
+   PCO_DEBUG_NO_UBO_PUSH = BITFIELD64_BIT(18),
 };
 
 extern uint64_t pco_debug;
@@ -1845,6 +1846,8 @@ bool pco_nir_lower_subgroups(nir_shader *shader);
 bool pco_nir_lower_tex(nir_shader *shader, pco_data *data, pco_ctx *ctx);
 bool pco_nir_lower_variables(nir_shader *shader, bool inputs, bool outputs);
 bool pco_nir_lower_vk(nir_shader *shader, pco_data *data);
+
+void pco_nir_analyze_ubo_ranges(nir_shader *shader, pco_data *data);
 bool pco_nir_pfo(nir_shader *shader, pco_fs_data *fs);
 bool pco_nir_point_size(nir_shader *shader);
 bool pco_nir_point_size_xfb(nir_shader *shader);

@@ -379,7 +379,8 @@ int main(int argc, char **argv)
    VkWriteDescriptorSet wds = { .sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, .dstSet = set,
                                 .descriptorCount = 1, .descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
                                 .pImageInfo = &dii };
-   float u128[32]; /* 128 B std140: vec4 v[5] at 0, ivec4 m[3] at 80, 16 B pad (also the push constants) */
+   float u128[32]; /* 128 B std140: vec4 v[5] at 0, ivec4 m[3] at 80, no pad (also the push constants). XCLIPSE: board 4 lane fold: an
+                   * earlier version zeroed floats 28..31 as a "pad", which are m[8..11]: those runs had 6 flags on, not 9. */
    if (has_b1 || u128p) {
       const char *uf = getenv("UBO_FLAGS");
       if (u128h || u128d || u128i || u128p) {
@@ -388,14 +389,9 @@ int main(int argc, char **argv)
          int32_t *m = (int32_t *)u128 + 20;
          for (unsigned i = 0; i < 12; i++)
             m[i] = uf ? atoi(uf) != 0 : ((i * 7u + 3u) % 5u) != 0;
-         /* XCLIPSE: fold lane: m[] is 12 ints at float 20..31, so this zeroes m[8..11] (the last ivec4): the modes ran
-          * 6 flags on, not 9 (u128p/i sum 112451584; u128k, all 9 flags, 82444288 = the CPU reference). Kept for
-          * comparable sums with older lanes; UBO_M12=1 leaves all 12 flags as set. */
-         if (!getenv("UBO_M12"))
-            for (unsigned i = 0; i < 4; i++)
-               ((int32_t *)u128)[28 + i] = 0;
       }
    }
+   VkBuffer ubo_vkbuf = VK_NULL_HANDLE;
    if (has_b1) {
       VkBuffer ub = VK_NULL_HANDLE;
       float u512[32 * 4];
@@ -460,6 +456,12 @@ int main(int argc, char **argv)
       } else {
          void *hp = host_buffer(usize, VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT, &ub);
          memcpy(hp, udata, usize);
+         if (ubo) {
+            ubo_vkbuf = ub;
+            /* UBO_TAILZERO=<bytes>: zero the buffer from this offset on (the reference of UBO_RANGE). */
+            if (getenv("UBO_TAILZERO"))
+               memset((uint8_t *)hp + atoi(getenv("UBO_TAILZERO")), 0, usize - atoi(getenv("UBO_TAILZERO")));
+         }
       }
       VkDescriptorBufferInfo dbi = { ub, 0, VK_WHOLE_SIZE };
       VkWriteDescriptorSetInlineUniformBlockEXT iub = {
@@ -736,6 +738,20 @@ int main(int argc, char **argv)
              f0, f1, (c1 - c0) / iterations);
       printf("submit vk %s %.4f ms/pass (vkQueueSubmit alone, CLOCK_MONOTONIC; the rest of the wall is the wait)\n", mode,
              ((ts.tv_sec - t0.tv_sec) * 1e3 + (ts.tv_nsec - t0.tv_nsec) / 1e6) / iterations);
+   }
+   /* UBO_RANGE=<bytes>: a UBO range smaller than the block (the shader reads past it: robustBufferAccess is off, so
+    * that is undefined in Vulkan; this driver promotes the reads to shared registers and defines the tail as zero,
+    * which UBO_TAILZERO=<same bytes> on a full-range run must reproduce). A full-range pass first leaves the
+    * shared registers holding the buffer's tail, then the descriptor is rewritten with the short range. */
+   if (ubo_vkbuf && getenv("UBO_RANGE")) {
+      begin();
+      RECORD_PASS();
+      submit_wait();
+      VkDescriptorBufferInfo sdbi = { ubo_vkbuf, 0, (VkDeviceSize)atoi(getenv("UBO_RANGE")) };
+      VkWriteDescriptorSet sw = { .sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, .dstSet = set, .dstBinding = 1,
+                                  .descriptorCount = 1, .descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,
+                                  .pBufferInfo = &sdbi };
+      vkUpdateDescriptorSets(dev, 1, &sw, 0, NULL);
    }
    pass_no = 0;
    for (int it = wall ? iterations - 1 : 0; it < iterations; it++) {

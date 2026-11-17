@@ -24,10 +24,14 @@ if [ -n "$EXTRA" ]; then
    MOUNT=(-v "$EXTRA:/extra:ro")
 fi
 docker run --rm --network none --cap-drop ALL --security-opt no-new-privileges --user "$(id -u):$(id -g)" \
-   -e HOME=/tmp -e BUILD="$BUILD" -e EXTRA="$EXTRA" -e ASAN_OPTIONS -e UBSAN_OPTIONS -e NIR_DEBUG -e PCO_DEBUG -v "$ROOT:/src:ro" -v "$W:/w" "${MOUNT[@]}" "$IMAGE" bash -c '
+   -e HOME=/tmp -e BUILD="$BUILD" -e EXTRA="$EXTRA" -e ASAN_OPTIONS -e UBSAN_OPTIONS -e NIR_DEBUG -e PCO_DEBUG -e PCO_UBO_PUSH_BUDGET -v "$ROOT:/src:ro" -v "$W:/w" "${MOUNT[@]}" "$IMAGE" bash -c '
 set -euo pipefail
 for f in /src/tools/vktest/bench/*.vert /src/tools/vktest/bench/*.frag; do
    glslangValidator -V -o "/w/bench_$(basename "$f").spv" "$f" >/dev/null
+done
+# shaders only the statistics tool uses, not vkbench
+for f in /src/tools/pco-stats/shaders/*.frag /src/tools/pco-stats/shaders/*.vert; do
+   glslangValidator -V -o "/w/stats_$(basename "$f").spv" "$f" >/dev/null
 done
 while read -r name vs fs flags; do
    case "$name" in ""|"#"*) continue;; esac

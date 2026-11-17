@@ -22,6 +22,7 @@ libpowervr_compiler_files = files(
   'pco_nir_lower_null_descriptors.c',
   'pco_nir_pvfio.c',
   'pco_nir_sync.c',
+  'pco_nir_ubo_push.c',
   'pco_nir_tex.c',
   'pco_nir_vk.c',
   'pco_opt.c',

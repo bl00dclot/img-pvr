@@ -503,6 +503,13 @@ static void setup_descriptors(pco_data *data, nir_shader *nir, const struct layo
       data->common.scratch_info = (pco_range){ .start = data->common.shareds, .count = 3 };
       data->common.shareds += 3;
    }
+   /* The promoted UBO ranges, last (pvr_setup_descriptors). */
+   if (data->common.ubo_range_count)
+      data->common.shareds = ALIGN_POT(data->common.shareds, 4);
+   for (unsigned u = 0; u < data->common.ubo_range_count; u++) {
+      data->common.ubo_ranges[u].start = data->common.shareds;
+      data->common.shareds += data->common.ubo_ranges[u].count;
+   }
 }
 
 static void spirv_debug(void *priv, enum nir_spirv_debug_level level, size_t off, const char *msg)
@@ -594,7 +601,7 @@ static const struct {
 };
 
 struct counts {
-   unsigned smp, smp_pplod, smp_f16, smp_raw, smp_bias, smp_grad, smp_replace, itrsmp, itr;
+   unsigned smp, smp_pplod, smp_f16, smp_raw, smp_bias, smp_grad, smp_replace, itrsmp, itr, ld, wdf;
 };
 
 /* Counts from the grouped IR text: one op per mnemonic, mods are the .suffixes. */
@@ -622,6 +629,10 @@ static void count_ops(const char *text, struct counts *c)
          c->smp_replace += !!strstr(tok, ".replace.");
       } else if (n >= 6 && !strncmp(p, "itrsmp", 6)) {
          c->itrsmp++;
+      } else if (n == 2 && !strncmp(p, "ld", 2)) {
+         c->ld++;
+      } else if (n == 3 && !strncmp(p, "wdf", 3)) {
+         c->wdf++;
       } else if ((n >= 4 && !strncmp(p, "fitr", 4)) || (n >= 4 && !strncmp(p, "ditr", 4))) {
          c->itr++;
       }
@@ -800,13 +811,13 @@ usage:
       struct pvr_stats st = pco_get_pvr_stats(sh);
       const struct rogue_stats *r = &st.rogue;
       printf("%s %s code_size=%u igrps=%u main=%u bitwise=%u control=%u temps=%u vtxins=%u spills=%u scratch=%u loops=%u "
-             "smp=%u smp_pplod=%u smp_f16=%u smp_raw=%u smp_bias=%u smp_grad=%u smp_replace=%u itrsmp=%u itr=%u\n",
+             "smp=%u smp_pplod=%u smp_f16=%u smp_raw=%u smp_bias=%u smp_grad=%u smp_replace=%u itrsmp=%u itr=%u ld=%u wdf=%u shareds=%u\n",
              name,
              s == MESA_SHADER_VERTEX ? "vs" : "fs",
              r->code_size, r->inst_group_count, r->main_inst_group_count, r->bitwise_inst_group_count,
              r->control_inst_group_count, r->temp_count, r->vtxin_count, r->spill_count, r->scratch_size,
              r->loop_count, c.smp, c.smp_pplod, c.smp_f16, c.smp_raw, c.smp_bias, c.smp_grad, c.smp_replace, c.itrsmp,
-             c.itr);
+             c.itr, c.ld, c.wdf, data[s].common.shareds);
    }
    ralloc_free(mem_ctx);
    return 0;
