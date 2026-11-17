@@ -827,6 +827,20 @@ static bool pvr_cached_desc_sets_match(const pco_data *d,
       if (!set->bindings || set->binding_count != sl->binding_count)
          return false;
 
+      /* The compiler read the binding kinds from the layout (pvr_init_descriptors);
+       * a hit made for another layout of the same sizes must not be used. */
+      for (unsigned b = 0; b < sl->binding_count; b++) {
+         const VkDescriptorType t = sl->bindings[b].type;
+         const pco_binding_data *bd = &set->bindings[b];
+
+         if (bd->is_img_smp != (t == VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER) ||
+             bd->is_inline_ubo != (t == VK_DESCRIPTOR_TYPE_INLINE_UNIFORM_BLOCK) ||
+             bd->is_dynamic_buffer !=
+                (t == VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER_DYNAMIC ||
+                 t == VK_DESCRIPTOR_TYPE_STORAGE_BUFFER_DYNAMIC))
+            return false;
+      }
+
       if (!set->used) {
          if (!pvr_range_is_zero(&set->range) ||
              !pvr_range_is_zero(&set->dynamic_range))
