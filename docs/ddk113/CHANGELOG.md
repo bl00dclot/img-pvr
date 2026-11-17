@@ -224,7 +224,7 @@ One entry per change, newest last. Every entry names its evidence. Every commit 
     shader 656 -> 524 groups for these three together.
 - **Review fixes after the board (`96668f5`, `19951c9`, `4db7da5`, `d2f62dc`, `ad4a9d8`):** `PCO_DEBUG=no_dynoff_skip`
   (bit 19) for `073da0e`; a pipeline cache hit is rejected when its cached binding kinds (combined sampler, inline
-  uniform block, dynamic buffer) differ from the layout's; the kick's RETRY loop gives up after 10 s with
+  uniform block, dynamic buffer) differ from the layout's; the render kick's RETRY loop gives up after 10 s (the compute and transfer kicks' loops are still unbounded) with
   `VK_ERROR_DEVICE_LOST` (a full queue holds tens of ms of work); the dummy-object buffers are freed on the error
   path of the static clear state; `vkbench BENCH_NODRAW=2` (draw in the first pass only) for the check that a
   render without a draw keeps the whole render area. Evidence: `TESTING.md`, board 3.

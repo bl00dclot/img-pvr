@@ -771,7 +771,7 @@ session. The 20 GPU recoveries on the board came from one release build that enc
 - Pipeline cache: a hit is rejected when its stored binding kinds differ from the layout's. On the phone, `vkbench`
   `ubo` and `blend` with a `VkPipelineCache` saved and reloaded in a new process: 25 of 25 pipelines found, sums
   unchanged (the rejection path itself was not exercised).
-- The kick's RETRY loop ends after 10 s with `VK_ERROR_DEVICE_LOST` (not triggered on the phone, which never
+- The render kick's RETRY loop ends after 10 s (compute and transfer kicks: still unbounded) with `VK_ERROR_DEVICE_LOST` (not triggered on the phone, which never
   reached it); the dummy-object buffers are freed when the static clear state fails to initialise.
 - A render with no draw keeps the whole render area, although the 32x32 dummy object touches only the origin
   tile: `vkbench` 512x512, 20 passes, clear and store without a draw: sum 66846720 = every pixel (old and new);
