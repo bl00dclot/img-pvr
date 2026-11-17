@@ -81,6 +81,7 @@ enum pco_debug {
    PCO_DEBUG_NO_VREG_COALESCE = BITFIELD64_BIT(17),
    PCO_DEBUG_NO_UBO_PUSH = BITFIELD64_BIT(18),
    PCO_DEBUG_NO_DYNOFF_SKIP = BITFIELD64_BIT(19),
+   PCO_DEBUG_NO_UBRANCH = BITFIELD64_BIT(20),
 };
 
 extern uint64_t pco_debug;
@@ -323,6 +324,7 @@ typedef struct _pco_if {
    pco_func *parent_func; /** Parent function. */
    pco_ref cond; /** If condition. */
    bool pred_exec; /** Whether this if construct uses predicated execution. */
+   bool uniform_cond; /** XCLIPSE: condition is uniform across invocations (NIR divergence). */
    struct list_head prologue; /** List of pco_cf_nodes for if prologue. */
    struct list_head then_body; /** List of pco_cf_nodes for if body. */
    struct list_head interlogue; /** List of pco_cf_nodes for if interlogue. */
