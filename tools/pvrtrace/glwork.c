@@ -451,11 +451,18 @@ static int bench(int argc, char **argv)
       ged_freq(f0, sizeof(f0));
       const double c0 = cpu_ms();
       clock_gettime(CLOCK_MONOTONIC, &t0);
+      /* XCLIPSE: BENCH_FINISH=1: a glFinish after every timed pass, so that each pass is its own 3D job in the trace
+       * (the vendor driver otherwise merges about 65 flushed passes into one job); run it after the warm-up so the
+       * clock is at 680 MHz. The wall time then includes the per-pass idle gap. */
+      const int fin = getenv("BENCH_FINISH") != NULL;
       for (int it = 0; it < iterations; it++) {
          if (!blend)
             glClear(GL_COLOR_BUFFER_BIT);
          glDrawArrays(GL_TRIANGLES, 0, 3);
-         glFlush();
+         if (fin)
+            glFinish();
+         else
+            glFlush();
       }
       glFinish();
       clock_gettime(CLOCK_MONOTONIC, &t1);
