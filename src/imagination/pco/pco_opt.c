@@ -432,6 +432,104 @@ static inline bool pixout_written_between(pco_instr *from_instr,
    return true;
 }
 
+
+/* XCLIPSE: a read of a shared register (a promoted UBO, push constant or inline block value, translated as an mbyp
+ * into an SSA value) goes straight into the ALU source that uses it, as the vendor's code does, instead of
+ * through a temp copy. Rules, each from the ISA tables in this tree:
+ *  - Shared registers (bank 0b100, pco_isa.py F_REGBANK) need a 3-bit bank field. Of the source slots only A (S0) and
+ *    C (S2) of the lower group have one in the 3-source variants (pco_isa.py: A 3b/8, B 2b/8, C 3b/8 and A 3b/11,
+ *    B 2b/8, C 3b/11); B (S1) has at most 2 bank bits (sbB_2bit_b2), so a shared register never goes in S1
+ *    (ref_src_map_valid(): S0, S2 and S3 only; S3-S5 stay out here, not proven on the device, see
+ *    pco_group_instrs.c coissue_ref_ok()).
+ *  - fmad maps src0, src1, src2 to S0, S1, S2 (pco_map.py group_map(O_FMAD)); fadd and fmul map src0, src1 to S0, S1;
+ *    tstz, scmp and bcmp map src0 to the phase-0 mbyp that reads S0 (group_map(O_TSTZ, O_SCMP, O_BCMP)).
+ *    So fmad takes a shared operand in src0 or src2, the others in src0.
+ *  - fmad's multiplicands, fadd's and fmul's operands commute, so a shared operand in src1 swaps into src0 if the
+ *    other operand can take S1 and both operands' modifiers exist in the slot they move to (pco_ops.py O_FADD,
+ *    O_FMUL: src0 {abs, neg, flr}, src1 {abs}; O_FMAD src0/src1 {abs, neg}, src2 {abs, neg, flr}). The same swap
+ *    pco_opt_prep_mods() already does for modifier ops.
+ *  - The shared register must keep its value from the mbyp to the use: skipped in a function that writes any
+ *    shared register. */
+static inline bool sharedsrc_mbyp(const pco_instr *p)
+{
+   if (p->op != PCO_OP_MBYP || !pco_ref_is_ssa(p->dest[0]) || pco_ref_get_chans(p->dest[0]) != 1 ||
+       pco_ref_get_bits(p->dest[0]) != 32)
+      return false;
+
+   pco_ref src = p->src[0];
+   if (!pco_ref_is_reg(src) || pco_ref_get_reg_class(src) != PCO_REG_CLASS_SHARED || pco_ref_get_chans(src) != 1 ||
+       pco_ref_get_bits(src) != 32 || pco_ref_has_mods_set(src))
+      return false;
+
+   if ((pco_instr_has_olchk(p) && pco_instr_get_olchk(p)) || (pco_instr_has_atom(p) && pco_instr_get_atom(p)) ||
+       (pco_instr_has_end(p) && pco_instr_get_end(p)) || (pco_instr_has_rpt(p) && pco_instr_get_rpt(p) != 1) ||
+       (pco_instr_has_exec_cnd(p) && pco_instr_get_exec_cnd(p) != PCO_EXEC_CND_E1_ZX))
+      return false;
+
+   return true;
+}
+
+static inline bool func_writes_shared(pco_func *func)
+{
+   pco_foreach_instr_in_func (instr, func) {
+      pco_foreach_instr_dest (pdest, instr) {
+         if ((pco_ref_is_reg(*pdest) || pco_ref_is_idx_reg(*pdest)) &&
+             pco_ref_get_reg_class(*pdest) == PCO_REG_CLASS_SHARED)
+            return true;
+      }
+   }
+
+   return false;
+}
+
+static inline bool ref_mods_fit(const pco_instr *instr, unsigned idx, pco_ref ref)
+{
+   return !(ref.abs && !pco_instr_src_has_abs(instr, idx)) && !(ref.neg && !pco_instr_src_has_neg(instr, idx)) &&
+          !(ref.flr && !pco_instr_src_has_flr(instr, idx));
+}
+
+/** Whether the op reads source idx through a slot that takes a shared register (S0 or S2). */
+static inline bool sharedsrc_slot_ok(const pco_instr *instr, unsigned idx)
+{
+   switch (instr->op) {
+   case PCO_OP_FMAD:
+      return idx == 0 || idx == 2;
+   case PCO_OP_FADD:
+   case PCO_OP_FMUL:
+   case PCO_OP_TSTZ:
+   case PCO_OP_SCMP:
+   case PCO_OP_BCMP:
+      return idx == 0;
+   default:
+      return false;
+   }
+}
+
+/** Puts shared-register source `repl` (modifiers set) at source idx of instr, swapping the two commutative operands
+ * if idx is S1. Returns false (and changes nothing) if no legal placement exists. */
+static bool sharedsrc_place(pco_instr *instr, unsigned idx, pco_ref repl)
+{
+   bool commutes = instr->op == PCO_OP_FMAD || instr->op == PCO_OP_FADD || instr->op == PCO_OP_FMUL;
+
+   if (sharedsrc_slot_ok(instr, idx)) {
+      if (!ref_mods_fit(instr, idx, repl))
+         return false;
+      instr->src[idx] = repl;
+      return true;
+   }
+
+   if (!commutes || idx != 1)
+      return false;
+
+   pco_ref other = instr->src[0];
+   if (!ref_src_map_valid(other, PCO_IO_S1, NULL) || !ref_mods_fit(instr, 0, repl) || !ref_mods_fit(instr, 1, other))
+      return false;
+
+   instr->src[0] = repl;
+   instr->src[1] = other;
+   return true;
+}
+
 /**
  * \brief Tries to forward-propagate an instruction.
  *
@@ -439,14 +537,18 @@ static inline bool pixout_written_between(pco_instr *from_instr,
  * \param[in] instr Instruction to try and forward-propagate.
  * \return True if forward-propagation was successful.
  */
-static inline bool try_fwd_prop_instr(pco_instr **writes, pco_instr *instr)
+static inline bool try_fwd_prop_instr(pco_instr **writes, pco_instr *instr, bool fwd_shared)
 {
    bool progress = false;
 
    pco_foreach_instr_src_ssa (psrc, instr) {
       pco_instr *parent_instr = writes[psrc->val];
 
-      if (!parent_instr || parent_instr->op != PCO_OP_MOV)
+      if (!parent_instr)
+         continue;
+
+      bool shared_read = fwd_shared && sharedsrc_mbyp(parent_instr);
+      if (parent_instr->op != PCO_OP_MOV && !shared_read)
          continue;
 
       if (!can_fwd_prop_src(instr, psrc, &parent_instr->src[0]))
@@ -477,6 +579,12 @@ static inline bool try_fwd_prop_instr(pco_instr **writes, pco_instr *instr)
 
       repl.neg ^= psrc->neg;
 
+      if (shared_read) {
+         if (sharedsrc_place(instr, psrc - instr->src, repl))
+            progress = true;
+         continue;
+      }
+
       /* TODO: types? */
       *psrc = repl;
 
@@ -506,12 +614,14 @@ static inline bool pco_opt_fwd_prop(pco_shader *shader)
    pco_foreach_func_in_shader (func, shader) {
       writes = rzalloc_array_size(NULL, sizeof(*writes), func->next_ssa);
 
+      bool fwd_shared = !PCO_DEBUG(NO_SHAREDSRC) && !func_writes_shared(func);
+
       pco_foreach_instr_in_func (instr, func) {
          pco_foreach_instr_dest_ssa (pdest, instr) {
             writes[pdest->val] = instr;
          }
 
-         progress |= try_fwd_prop_instr(writes, instr);
+         progress |= try_fwd_prop_instr(writes, instr, fwd_shared);
       }
 
       ralloc_free(writes);

@@ -81,6 +81,8 @@ enum pco_debug {
    PCO_DEBUG_NO_VREG_COALESCE = BITFIELD64_BIT(17),
    PCO_DEBUG_NO_UBO_PUSH = BITFIELD64_BIT(18),
    PCO_DEBUG_NO_DYNOFF_SKIP = BITFIELD64_BIT(19),
+   /* Bit 20: lane ubranch (no_ubranch). */
+   PCO_DEBUG_NO_SHAREDSRC = BITFIELD64_BIT(21),
 };
 
 extern uint64_t pco_debug;
