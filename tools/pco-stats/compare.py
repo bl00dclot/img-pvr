@@ -10,7 +10,7 @@ import argparse
 import sys
 
 STATS = ["igrps", "main", "bitwise", "control", "temps", "spills", "scratch", "loops", "code_size",
-         "smp", "smp_pplod", "smp_f16", "smp_raw", "smp_bias", "smp_grad", "smp_replace", "itrsmp", "itr", "vtxins"]
+         "smp", "smp_pplod", "smp_f16", "smp_raw", "smp_bias", "smp_grad", "smp_replace", "itrsmp", "itr", "vtxins", "ld", "wdf", "shareds"]
 JUDGED = {"igrps", "temps", "spills", "scratch", "loops", "code_size"}  # helped/hurt counts
 
 

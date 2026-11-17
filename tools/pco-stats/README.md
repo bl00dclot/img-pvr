@@ -27,7 +27,7 @@ changes the fragment shader's inputs.
 Result line, keys are what `PCO_DEBUG_PRINT=stats` prints plus the sample counts from the grouped IR:
 
 ```
-bench/td fs code_size=168 igrps=17 main=11 bitwise=0 control=6 temps=8 vtxins=0 spills=0 scratch=0 loops=0 smp=2 smp_pplod=0 smp_f16=0 smp_raw=0 smp_bias=0 smp_grad=0 smp_replace=0 itrsmp=0 itr=1
+bench/td fs code_size=168 igrps=17 main=11 bitwise=0 control=6 temps=8 vtxins=0 spills=0 scratch=0 loops=0 smp=2 smp_pplod=0 smp_f16=0 smp_raw=0 smp_bias=0 smp_grad=0 smp_replace=0 itrsmp=0 itr=1 ld=0 wdf=0 shareds=0
 ```
 
 `smp*` count `smp` instructions and their modifiers (`pplod`, `f16`, raw return = `rawdata`/`both`, `bias`, `gradients`,
