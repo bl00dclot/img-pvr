@@ -18,6 +18,7 @@
 //   ubod   ubo with the 512 B UBO in a device-local, non-host-visible memory type (staging copy)
 //   ubo128 shader (ubo shape, 12 flag branches, one 128 B std140 block: vec4 v[5], ivec4 m[3]) run as
 //          u128h UBO host-visible+coherent   u128d UBO device-local (staging copy)
+//          (ubogap: u128k / u128k0 = u128p with the flags as shader constants, default pattern / all 0)
 //          u128i inline uniform block (VK_EXT_inline_uniform_block)   u128p push constants
 //          All four use identical data, so their pixel sums are equal. UBO_FLAGS=0|1 sets all 12 flags to 0 or 1
 //          (default: the pattern of ubo); the sum then differs, the four variants still agree.
@@ -99,7 +100,7 @@ static const struct {
    size_t size;
 } frags[] = {
 #define F(n) { #n, spv_##n##_frag, sizeof(spv_##n##_frag) }
-   F(fill), F(tv), F(tf), F(td), F(c1), F(c2), F(fetch), F(disc), F(alu), F(alum), F(tvm), F(ubo), F(ubo128), F(ubo128p),
+   F(fill), F(tv), F(tf), F(td), F(c1), F(c2), F(fetch), F(disc), F(alu), F(alum), F(tvm), F(ubo), F(ubo128), F(ubo128p), F(ubo128k), F(ubo128k0),
 #undef F
 };
 
@@ -219,12 +220,13 @@ int main(int argc, char **argv)
     * target. Together they split the cost of the blend mode into its two parts. */
    const int blend = !strcmp(mode, "blend") || !strcmp(mode, "blendc");
    const int load = !strcmp(mode, "blend") || !strcmp(mode, "load");
-   const int u128p = !strcmp(mode, "u128p"), u128i = !strcmp(mode, "u128i");
+   const int u128k = !strcmp(mode, "u128k"), u128k0 = !strcmp(mode, "u128k0"); /* XCLIPSE: ubogap: flags as shader constants */
+   const int u128p = !strcmp(mode, "u128p") || u128k || u128k0, u128i = !strcmp(mode, "u128i");
    const int u128d = !strcmp(mode, "u128d"), u128h = !strcmp(mode, "u128h");
    const int ubo = !strcmp(mode, "ubo"), ubod = !strcmp(mode, "ubod");
    const int ubo_buf = ubo || ubod || u128h || u128d; /* binding 1 is a UBO */
    const int has_b1 = ubo_buf || u128i;
-   const char *frag_name = (blend || load) ? "fill" : u128p ? "ubo128p" : (u128h || u128d || u128i) ? "ubo128"
+   const char *frag_name = (blend || load) ? "fill" : u128k ? "ubo128k" : u128k0 ? "ubo128k0" : u128p ? "ubo128p" : (u128h || u128d || u128i) ? "ubo128"
                            : ubod ? "ubo" : mode;
    int frag = -1;
    for (unsigned i = 0; i < sizeof(frags) / sizeof(frags[0]); i++)
