@@ -6672,8 +6672,12 @@ static VkResult pvr_setup_descriptor_mappings(
          uint64_t data_addr = zero_addr;
          uint32_t covered = 0; /* dwords of the range inside the bound buffer */
          if (buffer_desc.addr && buffer_size > range_bytes) {
-            data_addr = buffer_desc.addr + buffer_desc.offset + range_bytes;
             covered = MIN2(range->count, (buffer_size - range_bytes) / sizeof(uint32_t));
+            /* XCLIPSE: only point the data DMA at the buffer when a whole dword of the range is inside it; with 1-3
+             * bytes left, covered is 0 and the DMA below reads range->count dwords, which must come from the zero page,
+             * not from past the buffer's end (review of board 4). */
+            if (covered)
+               data_addr = buffer_desc.addr + buffer_desc.offset + range_bytes;
          }
 
          /* No buffer dwords at all: the data DMA reads zeros too (it is never size 0). */
