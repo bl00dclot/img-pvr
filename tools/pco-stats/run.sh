@@ -11,7 +11,7 @@ BUILD=build-host PROBE= GLSLC= EXTRA=
 while getopts b:p:g:c: o; do case $o in b) BUILD=$OPTARG;; p) PROBE=$OPTARG;; g) GLSLC=$OPTARG;; c) EXTRA=$(cd "$OPTARG" && pwd);; *) exit 2;; esac; done
 shift $((OPTIND - 1))
 OUT=${1:?usage: run.sh [-b build-host-dir] [-p probe-shaders-dir] [-g glslc] [-c extra-corpus-dir] out.txt}
-IMAGE=img-pvr-build:trixie
+IMAGE=${IMAGE:-img-pvr-build:trixie} # IMAGE=img-pvr-build:trixie-san for a build-dir with sanitizers
 W=$(mktemp -d); trap 'rm -rf "$W"' EXIT
 # The probe's shaders are built by the app with glslc -O; do the same on the host.
 if [ -n "$PROBE" ] && [ -n "$GLSLC" ]; then
