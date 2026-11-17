@@ -300,6 +300,18 @@ static void io_common(struct pvr_cache_io *io, pco_common_data *c)
    IO_RANGE(c->push_consts.range);
    IO_INT(c->push_consts.used, ~0u);
 
+   IO_INT(c->ubo_range_count, PCO_UBO_PUSH_MAX_RANGES);
+   for (unsigned u = 0; u < ARRAY_SIZE(c->ubo_ranges); u++) {
+      pco_ubo_range *r = &c->ubo_ranges[u];
+
+      IO_INT(r->desc_set, PVR_MAX_DESCRIPTOR_SETS - 1);
+      IO_INT(r->binding, PVR_CACHED_MAX_BINDINGS - 1);
+      IO_INT(r->elem, ~0u);
+      IO_INT(r->offset, ~0u);
+      IO_INT(r->count, PVR_CACHED_MAX_REG);
+      IO_INT(r->start, ~0u);
+   }
+
    IO_RANGE(c->point_sampler);
    IO_RANGE(c->ia_sampler);
 
@@ -549,9 +561,9 @@ static bool io_xfb(struct pvr_cache_io *io, void *mem_ctx, nir_xfb_info **xfb)
  * until the walkers are looked at.
  */
 #if UINTPTR_MAX == 0xffffffffu
-static_assert(sizeof(pco_data) == 3100, "pco_data changed: update io_*()");
+static_assert(sizeof(pco_data) == 3296, "pco_data changed: update io_*()");
 #else
-static_assert(sizeof(pco_data) == 3160, "pco_data changed: update io_*()");
+static_assert(sizeof(pco_data) == 3352, "pco_data changed: update io_*()");
 #endif
 static_assert(sizeof(nir_xfb_info) == 24, "nir_xfb_info changed: update io_xfb()");
 

@@ -632,6 +632,19 @@ static VkResult pvr_pds_descriptor_program_create_and_upload(
       };
    }
 
+   /* XCLIPSE: one DMA per promoted UBO range, from the buffer's address at draw time (pvr_setup_descriptor_mappings). */
+   for (unsigned u = 0; u < data->common.ubo_range_count; ++u) {
+      const pco_ubo_range *range = &data->common.ubo_ranges[u];
+
+      assert(program.buffer_count < PVR_PDS_MAX_BUFFERS);
+      program.buffers[program.buffer_count++] = (struct pvr_pds_buffer){
+         .type = PVR_BUFFER_TYPE_UBO,
+         .size_in_dwords = range->count,
+         .destination = range->start,
+         .buffer_id = u,
+      };
+   }
+
    pds_info->entries_size_in_bytes = const_entries_size_in_bytes;
 
    pvr_pds_generate_descriptor_upload_program(&program, NULL, pds_info);
@@ -2982,6 +2995,18 @@ static void pvr_setup_descriptors(pco_data *data,
       };
 
       data->common.shareds += 3;
+   }
+
+   /* XCLIPSE: shared registers for the UBO ranges the compiler promoted (pco_nir_ubo_push.c), after everything
+    * above so that no other allocation moves. The descriptor PDS program DMAs each range here. */
+   if (data->common.ubo_range_count)
+      data->common.shareds = ALIGN_POT(data->common.shareds, 4);
+
+   for (unsigned u = 0; u < data->common.ubo_range_count; ++u) {
+      pco_ubo_range *range = &data->common.ubo_ranges[u];
+
+      range->start = data->common.shareds;
+      data->common.shareds += range->count;
    }
 }
 

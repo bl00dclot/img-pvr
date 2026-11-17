@@ -947,7 +947,9 @@ struct pvr_pds_buffer {
    };
 };
 
-#define PVR_PDS_MAX_BUFFERS (24)
+/* XCLIPSE: 24 -> 32 for up to 8 UBO ranges (PCO_UBO_PUSH_MAX_RANGES) next to the 18 buffers a stage can have already. With 8
+ * sets, 40 DMAs use 40 of the 64 64-bit and 120 of the 128 32-bit PDS constants. */
+#define PVR_PDS_MAX_BUFFERS (32)
 
 /* Maximum memory allocation needed for const map entries in
  * pvr_pds_generate_descriptor_upload_program().
@@ -1071,6 +1073,9 @@ struct pvr_pds_vertex_primary_program_input {
 #define PVR_PDS_CONST_MAP_ENTRY_TYPE_COND_RENDER (15)
 #define PVR_PDS_CONST_MAP_ENTRY_TYPE_VERTEX_ATTRIBUTE_STRIDE (16)
 
+/* XCLIPSE: source address and size of a promoted UBO range, patched at draw time. */
+#define PVR_PDS_CONST_MAP_ENTRY_TYPE_UBO_RANGE (17)
+
 /* We pack all the following structs tightly into a buffer using += sizeof(x)
  * offsets, this can lead to data that is not native aligned. Supplying the
  * packed attribute indicates that unaligned accesses may be required, and the
@@ -1136,6 +1141,15 @@ struct pvr_const_map_entry_special_buffer {
 
    uint32_t size_in_dwords;
    uint32_t data;
+} PVR_PACKED;
+
+/* XCLIPSE: follows the LITERAL32 entry of its DMA; the driver clamps that control word's BSIZE to the bound range. */
+struct pvr_const_map_entry_ubo_range {
+   uint8_t type;
+   uint8_t const_offset; /* The 64-bit source address constant. */
+
+   uint8_t const32_offset; /* The 32-bit control word constant. */
+   uint16_t range_index; /* pco_common_data::ubo_ranges[]. */
 } PVR_PACKED;
 
 struct pvr_const_map_entry_doutu_address {

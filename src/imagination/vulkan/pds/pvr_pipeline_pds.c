@@ -1605,6 +1605,32 @@ void pvr_pds_generate_descriptor_upload_program(
       bool last_dma = (++running_dma_count == total_dma_count);
       bool halt = last_dma && !input_program->secondary_program_present;
 
+      if (buffer->type == PVR_BUFFER_TYPE_UBO) {
+         struct pvr_const_map_entry_ubo_range *ubo_entry;
+
+         /* The burst writes the control word with the full size; the entry after it lets the driver patch the
+          * address and clamp the size at draw time. */
+         PVR_PDS_MODE_TOGGLE(code_section,
+                             instruction,
+                             pvr_encode_burst_cs(&entry_write_state,
+                                                 last_dma,
+                                                 halt,
+                                                 next_const32,
+                                                 next_const64,
+                                                 buffer->size_in_dwords,
+                                                 buffer->destination));
+
+         ubo_entry = pvr_prepare_next_pds_const_map_entry(&entry_write_state, sizeof(*ubo_entry));
+         ubo_entry->type = PVR_PDS_CONST_MAP_ENTRY_TYPE_UBO_RANGE;
+         ubo_entry->const_offset = next_const64 * 2;
+         ubo_entry->const32_offset = next_const32;
+         ubo_entry->range_index = buffer->buffer_id;
+
+         next_const64++;
+         next_const32++;
+         continue;
+      }
+
       switch (buffer->type) {
       case PVR_BUFFER_TYPE_DYNAMIC:
       case PVR_BUFFER_TYPE_PUSH_CONSTS:
