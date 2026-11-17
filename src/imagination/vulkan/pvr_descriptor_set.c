@@ -432,6 +432,12 @@ pvr_descriptor_set_create(struct pvr_device *device,
       result = pvr_pool_alloc(pool, set->size, &set->dev_addr, &set->mapping);
       if (result != VK_SUCCESS)
          goto err_free_descriptor_set;
+
+      /* XCLIPSE: pool memory is reused after a free or reset and holds old descriptors. A promoted UBO range
+       * (pco_nir_ubo_push.c) is DMA'd from its descriptor's address at draw time whether or not the shader's branch
+       * runs, so a descriptor that was never written must read as null (address 0: the driver then reads the zero
+       * page) and not as stale data. A few hundred bytes per allocated set. */
+      memset(set->mapping, 0, set->size);
    }
 
    vk_descriptor_set_layout_ref(&layout->vk);
