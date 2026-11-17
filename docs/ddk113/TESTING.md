@@ -692,7 +692,7 @@ the host compiler output is byte-identical to `41bad10`, below):
 | 15 | `no_schedwdf` | `itrsmp` followed by a `wdf` group |
 | 16 | `no_imadd_addr` | `add64_32` buffer address |
 | 17 | `no_vreg_coalesce` | lone copy into the phi register |
-| 18 | (unused here; a later branch uses it) | |
+| 18 | `no_ubo_push` | every UBO read an `ld` (board 4) |
 | 19 | `no_dynoff_skip` | the dynamic-offset add for every buffer (`073da0e`) |
 
 `no_dynoff_skip` was added after the board (the uniform commit had none; a later check found 47 shaders
@@ -815,3 +815,49 @@ ours.
   registers are not coalesced (they need the register allocator); the TA time beyond the dummy object is unexplained.
 
 Drafted with an LLM; marker word per AGENTS.md: biblioklept.
+
+### 2026-11-17: board 4 (uniform-buffer reads from shared registers)
+
+Base: `7045a18` (the pushed `ddk113`). Head: `fa48d39` (29 commits, `CHANGELOG.md`). Old = `7045a18`, new =
+`fa48d39`, both built with `DDK=1.13 scripts/docker-build.sh`. Bar as before.
+
+**What changed.** A UBO read at a constant offset is read from shared registers that the descriptor PDS program
+fills by DMA at draw time (budget 128 dwords per stage, part past the buffer from a zero page). `PCO_DEBUG=no_ubo_push`
+restores `ld` for every read; with it the host corpus output equals `7045a18` on every old key (88 of 88
+pipelines).
+
+**Host corpus** (`tools/pco-stats`, 88 pipelines shared with old): groups 101542 -> 98008 (-3.5 %), 45 helped, 0
+hurt; temps 2373 -> 2371; spills 0. The game port (54 stages): 44 helped, 0 hurt. The lean fragment shader 524 ->
+458 groups, `ld` 33 -> 3. The sanitizer build (ASan, UBSan, asserts, NIR validation) gives byte-identical output and
+no error on all 100 pipelines. Reverting the register-255 legaliser fix changes no corpus shader.
+
+**Phone, correctness.** `vkbench` sums old = new = new with `no_ubo_push` in every mode (`u128*` equal the CPU
+reference 82444288), including `ubox` at `UBO_PAD` 0/54/100, `UBO_DYN=range|whole`, `UBO_RANGE`, `UBO_SAMECB`,
+`BENCH_NODRAW=1|2` and pipeline-cache hits. Odd `WHOLE_SIZE` buffers of 1025-1032 bytes read at offset 1024
+(dynamic and static): no GPU fault, sums equal the zero-tail reference. Probe PIXELS identical. Old, new and
+compute in one shell (contexts alternate at job boundaries): sums identical, no recovery; a mid-job context
+switch was not observed, so the context-switch size fixes are checked by inspection only.
+
+**dEQP-VK, old vs new per test:** 0 changed on `ubo` (9115), full `glsl.builtin` (2131), `glsl.operator` 1/3,
+`glsl.texture_functions` 1/3, `binding_model` 1/10, robustness (uniform/ubo names), `inline_uniform`, `renderpass`
+1/5, `draw` 1/10, `api` 1/100, `synchronization` 1/20, `compute` 1/10, pipeline cache (all). One flake: in the
+first new `draw` 1/10 run, `draw.dynamic_rendering.partial_secondary_cmd_buff.instanced.draw_indirect_..._multiview`
+failed once (image difference) with one TA recovery (TA 4 -> 5) and passed on retry; the full list again and the
+test alone 5x per driver passed with no recovery. The test uses no uniform buffer; the cause is not known.
+
+**Timing, 3D job ms at 680 MHz** (5 interleaved repeats, median [min-max]):
+
+| mode | old | new | GLES | new/GLES |
+|---|---|---|---|---|
+| `ubo` | 24.621 [24.620-24.627] | 4.025 [4.025-4.025] | 0.952 | 4.23 (old 25.9) |
+| `u128h` | 20.789 [20.783-20.794] | 3.617 [3.616-3.617] | 0.941 (`ubo128l`) | 3.84 (old 22.1) |
+| `u128i`, `u128p` | 4.31, 4.33 | same | 0.941 | 4.6 (no promotion: inline block, push constants) |
+| fill, blend, disc, tv, alu | | ranges overlap old | | unchanged |
+
+Probe T1-T4: unchanged except T2 individual draws, 14.07 -> 14.20 ms per 1000 draws (+1.0 %, ranges disjoint),
+about 0.14 us of CPU per draw; not bisected.
+
+**Open.** The 1.5x target for `ubo` is not met. What remains is control flow: this compiler predicates every
+small `if` where the vendor shader keeps real test-and-branch pairs (`PCO_DEBUG=no_pred_cf` alone is -28 % on
+`ubo`); next is a real branch on uniform conditions. Also open: the T2 per-draw cost, the compute and transfer
+kicks' unbounded RETRY loops, and validation layers (no loader shim on the phone).

@@ -237,3 +237,27 @@ One entry per change, newest last. Every entry names its evidence. Every commit 
   `-c` (extra corpus), `-n` (colour attachments), vertex inputs, and the `vkbench ubo` mode.
 - **Debug flags:** `PCO_DEBUG` bits 11-17 and 19, table in `TESTING.md` (board 3).
 - **docs:** board 3 in `TESTING.md`, this list, the speed status in `README.md`. Drafted with an LLM; marker word per AGENTS.md: biblioklept.
+- **Board 4: uniform-buffer reads from shared registers (`91afe23`, `174172c`, `cc43cab`, `4d4289e`, `c6191a8`,
+  `9662c09`):** a UBO read at a constant offset is promoted to shared registers, as Intel, Freedreno and Panfrost
+  do with their push/constant files. `pco_nir_ubo_push.c` records up to `PCO_UBO_PUSH_MAX_RANGES` ranges per stage,
+  at most `PCO_UBO_PUSH_BUDGET` (128) dwords; the descriptor PDS program DMAs each range into the common store at
+  draw time, and the part of a range past the bound buffer is filled from a zero page, so every promoted dword is
+  defined. Reads wider than 4 dwords are copied in repeats of 4. `PCO_DEBUG=no_ubo_push` (bit 18) keeps every
+  read an `ld`; the env `PCO_UBO_PUSH_BUDGET` overrides the budget (and then bypasses the pipeline cache).
+  Evidence: 3D job at 680 MHz `vkbench ubo` 24.62 -> 4.03 ms, `u128h` 20.79 -> 3.62 ms; game corpus 44 of 54
+  stages helped, 0 hurt, groups -3.5 %; the game's lean fragment shader 524 -> 458 groups, `ld` 33 -> 3.
+- **Board 4 review fixes (`0b0fe39`, `6d53388`, `ad8b998`, `bbd3728`, `e5c0870`, `f09fee5`, `14c058b`, `03290f4`,
+  `0ff1b9f`, `650d3e4`, `fa48d39`):** `max_shared_registers` is 16-bit; the compute context-switch size converts
+  `usc_common_size` from its 64-byte units; descriptor sets start zeroed; a dynamic `WHOLE_SIZE` descriptor's
+  promoted range covers the buffer from the dynamic offset (and `vkCopyDescriptorSets` carries that bit, also
+  past descriptor 63); promoted ranges never take a stage past its shared-register limit; ranges from the
+  pipeline cache are validated against that limit before use; a negative budget is ignored; a range with only
+  1-3 bytes of buffer left reads the zero page instead of past the buffer end. `0ff1b9f` fixes a
+  pre-existing legaliser bug: a register vector that crosses shared register 255 was addressed wrongly (no
+  game or corpus shader has one; `vkbench ubox` with `UBO_PAD=54` does).
+- **Tools (`e8db757`, `e854fbb`, `fcc5cfc`, `fb46a51`, `0e9c774`, `8d7d6f0`, `3d5d9cf`, `411d7ec`, `eb672b1`,
+  `2d897ad`, `b2d00a8`, `8c47710`):** `vkbench` modes `u128h/d/i/p`, `u128k/k0`, `ubod`, `ubox` and env `UBO_DYN`,
+  `UBO_SAMECB`, `UBO_M12`, `UBO_TAILZERO`; `glwork` UBO twins and `BENCH_FINISH=1`; `pco-stats` prints `ld`,
+  `wdf` and shared dwords; `tools/vktest/pvr_cache_host_test.sh` forges cache records with bad UBO ranges.
+  `UBO_M12=1` fixes a test bug: the earlier `vkbench`/`glwork` zeroed four of the twelve flags.
+- **docs:** board 4 in `TESTING.md`, this list, the speed status in `README.md`. Drafted with an LLM; marker word per AGENTS.md: biblioklept.

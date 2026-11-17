@@ -17,8 +17,9 @@ passes, including partial renders (`TESTING.md` L0–L7). All four DDK 1.13 comm
 - **Speed:** measured at one GPU clock (680 MHz; `TESTING.md`, 2026-11-16 and 2026-11-17 entries), the GPU time
   of a 512x512 pass against the vendor GLES driver after board 3 is 1.07x for a plain fill, 1.02x with discard,
   1.32x for blending over loaded contents, 1.06x for an ALU-heavy shader and 0.89x for a texture read. A shader
-  that reads 28 scalars from a uniform buffer in 12 branches (`vkbench ubo`) is 26x slower than GLES and is the
-  largest gap left. On the probe, the render-pass chains are 13-23 % faster than before board 3 (T1 -13 %, T3 -19
+  that reads 28 scalars from a uniform buffer in 12 branches (`vkbench ubo`) was 26x slower than GLES; board 4
+  reads such values from shared registers and brings it to 4.2x, still the largest gap (GLES branches where this
+  compiler predicates; `TESTING.md`, board 4). On the probe, the render-pass chains are 13-23 % faster than before board 3 (T1 -13 %, T3 -19
   to -23 %, instanced draws -14 %); the probe has not been compared with GLES at one clock since 2026-11-15
   (then 2.3-3.9x slower, mixed clock levels); uploads are 1.2-1.4x faster. "Next for speed" below lists what
   remains.
@@ -87,8 +88,8 @@ expect a loader (dEQP-VK). Inside an app the ICD also needs a `libhardware.so` n
 
 Measured causes are in `TESTING.md` ("speed work"). In order of expected gain, as of 2026-11-15; the
 same-clock measurements of 2026-11-16 put texture reads at parity with GLES and leave fill, blending, discard
-and ALU as the gaps (`TESTING.md`, board 2, "Open"); board 3 closed most of those, and uniform-buffer reads are
-now the largest gap (`TESTING.md`, board 3):
+and ALU as the gaps (`TESTING.md`, board 2, "Open"); board 3 closed most of those; board 4 cut the uniform-buffer gap from 26x to 4.2x, and the rest of it is
+predicated small branches (`TESTING.md`, board 4):
 
 1. **Half-float texture results for relaxed-precision shaders.** Each 32-bit channel a texture read returns
    costs GPU time per fragment. Imagination's precision guide says Rogue stores `lowp` and `mediump` as
