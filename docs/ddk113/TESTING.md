@@ -694,6 +694,8 @@ the host compiler output is byte-identical to `41bad10`, below):
 | 17 | `no_vreg_coalesce` | lone copy into the phi register |
 | 18 | `no_ubo_push` | every UBO read an `ld` (board 4) |
 | 19 | `no_dynoff_skip` | the dynamic-offset add for every buffer (`073da0e`) |
+| 20 | `no_ubranch` | predication of uniform `if`s too (board 5) |
+| 21 | `no_sharedsrc` | `mbyp` copies of shared-register reads, three-group flag test (board 5) |
 
 `no_dynoff_skip` was added after the board (the uniform commit had none; a later check found 47 shaders
 differing without it).
@@ -854,10 +856,47 @@ test alone 5x per driver passed with no recovery. The test uses no uniform buffe
 | `u128i`, `u128p` | 4.31, 4.33 | same | 0.941 | 4.6 (no promotion: inline block, push constants) |
 | fill, blend, disc, tv, alu | | ranges overlap old | | unchanged |
 
-Probe T1-T4: unchanged except T2 individual draws, 14.07 -> 14.20 ms per 1000 draws (+1.0 %, ranges disjoint),
-about 0.14 us of CPU per draw; not bisected.
+Probe T1-T4: unchanged. (The first report here, T2 individual +1.0 % with disjoint ranges, did not reproduce:
+two later sessions with 7045a18 and 75f4bf2 interleaved overlap, medians 14.09 vs 14.14 ms per 1000 draws over 10
+runs; it was drift between sessions.)
 
 **Open.** The 1.5x target for `ubo` is not met. What remains is control flow: this compiler predicates every
 small `if` where the vendor shader keeps real test-and-branch pairs (`PCO_DEBUG=no_pred_cf` alone is -28 % on
-`ubo`); next is a real branch on uniform conditions. Also open: the T2 per-draw cost,
-and validation layers (no loader shim on the phone).
+`ubo`); next is a real branch on uniform conditions. Also open: validation layers (no loader shim on the phone).
+
+### 2026-11-17: board 5 (uniform branches, shared-register sources, RETRY caps)
+
+Base: `75f4bf2` (pushed `ddk113`). Head: `145c50d`. Old = `75f4bf2`, new = `145c50d`, both release builds.
+
+**What changed.** Uniform `if`s with more than 5 body instructions branch instead of being predicated
+(`no_ubranch`); shared-register reads feed ALU sources directly and a flag test is one group (`no_sharedsrc`); the
+compute and transfer kicks' RETRY loops stop after 10 s with `VK_ERROR_DEVICE_LOST`. With
+`PCO_DEBUG=no_ubranch,no_sharedsrc` the host corpus output equals `75f4bf2` on every key (100 pipelines).
+
+**Host corpus:** 25 of 100 changed, 0 hurt on groups; groups 98820 -> 97696 (-1.1 %), code size -1.1 %, spills 0; temps
+net -1 (six vertex shaders +1, from `sharedsrc`). Game lean fragment shader 458 -> 424, `bench/ubo` 185 -> 121. The
+sanitizer build (ASan, UBSan, NIR validation, plus a `gl_FrontFacing` shader) gives identical output and no error.
+
+**Phone, correctness:** `vkbench` 56 cases (every mode, `ubox` pads, `UBO_FLAGS`, `UBO_RANGE`, `UBO_DYN`, `UBO_SAMECB`,
+`BENCH_NODRAW`): old = new = new with each flag and both. Probe PIXELS, `vkcompute`, `vktransfer` identical. HWR
+unchanged in every session.
+
+**dEQP-VK, old vs new per test, 0 changed:** `ubo` (9115), `glsl.builtin` (2131), `glsl.operator` 1/3, `glsl.texture_functions`
+1/3, `glsl.loops` (624), `glsl.switch` (122), front-face cases (331), `binding_model` 1/10, `renderpass` 1/5, `draw` 1/10,
+`api` 1/100, `synchronization` 1/20, `compute` 1/10, `api.copy_and_blit` 1/10 (D24S8/D32S8 skipped: they reset the GPU
+on the old driver too).
+
+**Timing, 3D job ms at 680 MHz** (5 interleaved repeats, median):
+
+| mode | old | new | GLES | new/GLES |
+|---|---|---|---|---|
+| `ubo` | 4.024 | 2.538 | 0.952 | 2.67 (was 4.23) |
+| `u128h` | 3.616 | 2.735 | 0.941 | 2.91 (was 3.84) |
+| `u128i` | 4.306 | 2.321 | 0.941 | 2.47 (was 4.58) |
+| `u128p` | 4.326 | 2.321 | 0.941 | 2.47 (was 4.60) |
+| fill, blend, disc, tv, alu | | ranges overlap old | | 1.07, 1.33, 1.01, 0.84, 1.05 |
+
+Probe T1-T4: all ranges overlap old.
+
+**Open.** `ubo` is still 2.7x GLES. The game's uniform `if` bodies of 3-5 instructions stay predicated (branching them
+cost groups statically; not measured on the phone). The predicated bodies still copy each result with an `mbyp`.

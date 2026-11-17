@@ -264,3 +264,18 @@ One entry per change, newest last. Every entry names its evidence. Every commit 
 - **retry: compute and transfer kicks' RETRY loops bounded (as `4db7da5`, `6f9159b`).** After 10 s of RETRY answers
   `pvr_arch_srv_job_compute.c` and `pvr_arch_srv_job_transfer.c` return `VK_ERROR_DEVICE_LOST`, and sleep 100 us between
   answers. Three loops with different bodies, so no shared helper. Evidence: dEQP old vs new, `vkcompute` and `vktransfer` sums.
+- **Board 5: uniform branches (`dee2bed`, `0695a1d`, `155c742`, `145c50d`):** `pco_trans_nir` runs NIR divergence
+  analysis; an `if` whose condition is uniform (`nir_src_is_divergent()` at the use, as the analysis requires without
+  LCSSA) and whose bodies hold more than 5 instructions keeps a real branch (`cndst`/`br`) instead of being predicated.
+  The threshold is from a static corpus sweep: 4 or lower adds 13-19 groups to the game's lean fragment shader. The
+  PCO intrinsics are listed as divergent in the analysis (debug builds hit its unreachable default before).
+  `PCO_DEBUG=no_ubranch` (bit 20).
+- **Board 5: shared-register sources (`4adcf1b`, `b15bcba`):** a shared-register read is forwarded into the ALU source
+  slots whose bank field can address shared registers (S0, S2; S1 has a 2-bit bank field), swapping the first two
+  operands of `fadd`/`fmul`/`fmad` when the modifiers fit; never in a function that writes shared registers, never into
+  co-issue phase 1. `if (x != 0)` on a 32-bit scalar tests `x` itself (`tstz.u32`), one group instead of three.
+  `PCO_DEBUG=no_sharedsrc` (bit 21).
+- **Evidence (board 5):** see `TESTING.md`, board 5. 3D job ms at 680 MHz `ubo` 4.024 -> 2.538 (2.67x GLES, was 4.23x),
+  `u128p` 4.326 -> 2.321; game corpus -1.1 % groups, 0 hurt; dEQP 14 lists 0 changed per test.
+- **docs:** board 5 in `TESTING.md`, this list, `README.md` speed status; the board 4 T2 slowdown did not reproduce
+  (corrected in `TESTING.md`). Drafted with an LLM; marker word per AGENTS.md: biblioklept.
