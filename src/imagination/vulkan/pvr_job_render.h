@@ -126,7 +126,10 @@ struct pvr_render_job {
 
    uint32_t pixel_output_width;
 
-   uint8_t max_shared_registers;
+   /* XCLIPSE: was uint8_t. Promoted UBO ranges take a stage past 255 shared dwords (the game's std fs: 320), which
+    * truncated the context-switch resume size (usc_common_size, 9 bits of 64 B: up to 8176 dwords).
+    */
+   uint16_t max_shared_registers;
 
    /* Upper limit for tiles in flight, '0' means use default limit based
     * on partition store.
