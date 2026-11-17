@@ -439,13 +439,14 @@ void PVR_PER_ARCH(UpdateDescriptorSets)(
 
          /* XCLIPSE: the WHOLE_SIZE bits travel with the descriptors. */
          for (uint32_t j = 0; j < copy->descriptorCount; j++) {
-            if (dst_desc_offset + j >= 64 || src_desc_offset + j >= 64)
+            if (dst_desc_offset + j >= 64)
                break;
 
+            /* Past bit 63 the consumer treats a descriptor as WHOLE_SIZE; carry that over (review of board 4). */
+            const bool src_whole = src_desc_offset + j >= 64 ||
+                                   ((src_set->dynamic_whole_size >> (src_desc_offset + j)) & 1);
             const uint64_t bit = BITFIELD64_BIT(dst_desc_offset + j);
-            dst_set->dynamic_whole_size =
-               (dst_set->dynamic_whole_size & ~bit) |
-               (((src_set->dynamic_whole_size >> (src_desc_offset + j)) & 1) ? bit : 0);
+            dst_set->dynamic_whole_size = (dst_set->dynamic_whole_size & ~bit) | (src_whole ? bit : 0);
          }
 
          continue;
