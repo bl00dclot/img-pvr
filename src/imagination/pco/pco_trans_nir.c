@@ -1500,14 +1500,19 @@ static pco_instr *trans_load_buffer(trans_ctx *tctx,
          assert(range->start != ~0u && !(nir_src_as_uint(intr->src[1]) % 4));
          unsigned skip = offset_dw - range->offset;
 
-         /* A repeat is at most 4 (the vectoriser makes UBO loads of 5 and 8 dwords): copy the dwords one by one,
-          * the vec gives the register allocator the destination to coalesce into. */
+         /* A repeat is at most 4 (the vectoriser makes UBO loads of 5, 8, 12 and 16 dwords): copy in repeats of up
+          * to 4 dwords into vectors, and let the vec gather their components into the destination. */
          if (chans > 4) {
-            pco_ref comps[8];
+            pco_ref comps[16];
             assert(chans <= ARRAY_SIZE(comps));
-            for (unsigned c = 0; c < chans; ++c) {
-               comps[c] = pco_ref_new_ssa32(tctx->func);
-               pco_mbyp(&tctx->b, comps[c], pco_ref_hwreg(range->start + skip + c, PCO_REG_CLASS_SHARED));
+            for (unsigned c = 0; c < chans; c += 4) {
+               unsigned n = MIN2(4, chans - c);
+               pco_ref part = pco_ref_new_ssa(tctx->func, 32, n);
+               pco_mbyp(&tctx->b, part, pco_ref_hwreg_vec(range->start + skip + c, PCO_REG_CLASS_SHARED, n), .rpt = n);
+               for (unsigned k = 0; k < n; ++k) {
+                  comps[c + k] = pco_ref_new_ssa32(tctx->func);
+                  pco_comp(&tctx->b, comps[c + k], part, pco_ref_val16(k));
+               }
             }
 
             return pco_vec(&tctx->b, dest, chans, comps);

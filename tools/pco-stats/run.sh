@@ -29,6 +29,10 @@ set -euo pipefail
 for f in /src/tools/vktest/bench/*.vert /src/tools/vktest/bench/*.frag; do
    glslangValidator -V -o "/w/bench_$(basename "$f").spv" "$f" >/dev/null
 done
+# shaders only the statistics tool uses, not vkbench
+for f in /src/tools/pco-stats/shaders/*.frag /src/tools/pco-stats/shaders/*.vert; do
+   glslangValidator -V -o "/w/stats_$(basename "$f").spv" "$f" >/dev/null
+done
 while read -r name vs fs flags; do
    case "$name" in ""|"#"*) continue;; esac
    v=/w/${vs%%:*}_${vs#*:}.spv; f=/w/${fs%%:*}_${fs#*:}.spv

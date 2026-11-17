@@ -17,3 +17,5 @@ probe/t1      probe:fs.vert    probe:t1.frag    -b
 probe/t1nb    probe:fs.vert    probe:t1.frag
 probe/t2      probe:t2.vert    probe:t2.frag
 probe/t3sep   probe:fs.vert    probe:t3sep.frag
+bench/ubowide  bench:vert.vert  stats:ubowide.frag
+bench/ubowidevs  stats:ubowide.vert  stats:ubowidevs.frag
