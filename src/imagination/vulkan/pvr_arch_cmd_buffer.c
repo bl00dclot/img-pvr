@@ -2473,8 +2473,13 @@ pvr_compute_generate_control_stream(struct pvr_csb *csb,
     * be preserved.
     */
    if (info->usc_common_shared) {
+      /* XCLIPSE: num_shared_regs is in dwords (pvr_arch_job_compute.c shifts it by 2 and divides by the 64 byte
+       * unit), usc_common_size in 64 byte units: convert, else the context-switch size is 16 times too small. */
       sub_cmd->num_shared_regs =
-         MAX2(sub_cmd->num_shared_regs, info->usc_common_size);
+         MAX2(sub_cmd->num_shared_regs,
+              info->usc_common_size *
+                 (ROGUE_CDMCTRL_KERNEL0_USC_COMMON_SIZE_UNIT_SIZE /
+                  sizeof(uint32_t)));
    }
 }
 
