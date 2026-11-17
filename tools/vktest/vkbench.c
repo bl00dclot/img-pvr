@@ -403,6 +403,12 @@ int main(int argc, char **argv)
       }
    }
    VkBuffer ubo_vkbuf = VK_NULL_HANDLE;
+   /* XCLIPSE: ubofix. UBO_SAMECB=1 (mode ubod): the last submit copies zeros into the device-local UBO, draws, copies the
+    * data in, draws again and reads that second draw back, all in one command buffer: its sum equals plain ubod only if
+    * the PDS DMA of the promoted ranges sees the copy that a barrier ordered before it. */
+   VkBuffer ubo_dev = VK_NULL_HANDLE, ubo_stage_data = VK_NULL_HANDLE, ubo_stage_zero = VK_NULL_HANDLE;
+   VkDeviceSize ubo_dev_size = 0;
+   const int ubo_samecb = ubod && getenv("UBO_SAMECB");
    if (has_b1) {
       VkBuffer ub = VK_NULL_HANDLE;
       float u512[32 * 4];
@@ -455,6 +461,13 @@ int main(int argc, char **argv)
          VkBuffer ustage;
          void *sp = host_buffer(usize, VK_BUFFER_USAGE_TRANSFER_SRC_BIT, &ustage);
          memcpy(sp, udata, usize);
+         ubo_dev = ub;
+         ubo_stage_data = ustage;
+         ubo_dev_size = usize;
+         if (ubo_samecb) {
+            void *zp = host_buffer(usize, VK_BUFFER_USAGE_TRANSFER_SRC_BIT, &ubo_stage_zero);
+            memset(zp, 0, usize);
+         }
          begin();
          VkBufferCopy bc = { 0, 0, usize };
          vkCmdCopyBuffer(cb, ustage, ub, 1, &bc);
@@ -786,6 +799,24 @@ int main(int argc, char **argv)
    pass_no = 0;
    for (int it = wall ? iterations - 1 : 0; it < iterations; it++) {
       begin();
+      if (ubo_samecb && it == iterations - 1) {
+#define UBO_COPY(src)                                                                                          \
+   do {                                                                                                        \
+      VkMemoryBarrier b1 = { .sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER, .srcAccessMask = VK_ACCESS_UNIFORM_READ_BIT, \
+                             .dstAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT };                                  \
+      vkCmdPipelineBarrier(cb, VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT, 0, 1, &b1, \
+                           0, NULL, 0, NULL);                                                                  \
+      VkBufferCopy bc2 = { 0, 0, ubo_dev_size };                                                               \
+      vkCmdCopyBuffer(cb, src, ubo_dev, 1, &bc2);                                                              \
+      VkMemoryBarrier b2 = { .sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER, .srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT, \
+                             .dstAccessMask = VK_ACCESS_UNIFORM_READ_BIT };                                    \
+      vkCmdPipelineBarrier(cb, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT, 0, 1, &b2, \
+                           0, NULL, 0, NULL);                                                                  \
+   } while (0)
+         UBO_COPY(ubo_stage_zero);
+         RECORD_PASS(); /* reads zeros */
+         UBO_COPY(ubo_stage_data);
+      }
       RECORD_PASS();
       if (it == iterations - 1) {
          VkBufferImageCopy r = { .imageSubresource = { VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1 },
