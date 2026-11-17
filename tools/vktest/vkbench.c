@@ -15,6 +15,12 @@
 //   blend  fill blended (alpha 0.5) over the previous contents, loaded at the start of the pass
 //   ubo    tv plus 12 flag-controlled branches reading 28 scalar uniforms from one UBO (set 0 binding 1)
 //   load   fill, no blending, previous contents loaded   blendc  blend over a cleared target
+//   ubod   ubo with the 512 B UBO in a device-local, non-host-visible memory type (staging copy)
+//   ubo128 shader (ubo shape, 12 flag branches, one 128 B std140 block: vec4 v[5], ivec4 m[3]) run as
+//          u128h UBO host-visible+coherent   u128d UBO device-local (staging copy)
+//          u128i inline uniform block (VK_EXT_inline_uniform_block)   u128p push constants
+//          All four use identical data, so their pixel sums are equal. UBO_FLAGS=0|1 sets all 12 flags to 0 or 1
+//          (default: the pattern of ubo); the sum then differs, the four variants still agree.
 //
 // Pipeline cache test: with VKBENCH_CACHE=<file> the pipelines are created through a VkPipelineCache
 // that starts from <file> (if it exists) and is saved back to it (written atomically) at the end;
@@ -73,7 +79,8 @@
    X(vkCmdCopyBufferToImage) X(vkCmdBindDescriptorSets) X(vkCreateSampler)                \
    X(vkCreateDescriptorSetLayout) X(vkCreateDescriptorPool) X(vkAllocateDescriptorSets)   \
    X(vkUpdateDescriptorSets) X(vkCreateFence) X(vkResetFences) X(vkQueueSubmit)           \
-   X(vkWaitForFences) X(vkCreatePipelineCache) X(vkGetPipelineCacheData)
+   X(vkWaitForFences) X(vkCreatePipelineCache) X(vkGetPipelineCacheData)                     \
+   X(vkCmdCopyBuffer) X(vkCmdPushConstants)
 
 #define DECL(f) static PFN_##f f;
 FUNCS(DECL)
@@ -84,13 +91,15 @@ static VkCommandBuffer cb;
 static VkFence fence;
 static VkPhysicalDeviceMemoryProperties mp;
 
+/* The first NFRAGS_CACHE entries are the modes VKBENCH_CACHE_ALL creates (unchanged by the ubo128 shaders). */
+#define NFRAGS_CACHE 12
 static const struct {
    const char *name;
    const uint32_t *code;
    size_t size;
 } frags[] = {
 #define F(n) { #n, spv_##n##_frag, sizeof(spv_##n##_frag) }
-   F(fill), F(tv), F(tf), F(td), F(c1), F(c2), F(fetch), F(disc), F(alu), F(alum), F(tvm), F(ubo),
+   F(fill), F(tv), F(tf), F(td), F(c1), F(c2), F(fetch), F(disc), F(alu), F(alum), F(tvm), F(ubo), F(ubo128), F(ubo128p),
 #undef F
 };
 
@@ -210,7 +219,13 @@ int main(int argc, char **argv)
     * target. Together they split the cost of the blend mode into its two parts. */
    const int blend = !strcmp(mode, "blend") || !strcmp(mode, "blendc");
    const int load = !strcmp(mode, "blend") || !strcmp(mode, "load");
-   const char *frag_name = (blend || load) ? "fill" : mode;
+   const int u128p = !strcmp(mode, "u128p"), u128i = !strcmp(mode, "u128i");
+   const int u128d = !strcmp(mode, "u128d"), u128h = !strcmp(mode, "u128h");
+   const int ubo = !strcmp(mode, "ubo"), ubod = !strcmp(mode, "ubod");
+   const int ubo_buf = ubo || ubod || u128h || u128d; /* binding 1 is a UBO */
+   const int has_b1 = ubo_buf || u128i;
+   const char *frag_name = (blend || load) ? "fill" : u128p ? "ubo128p" : (u128h || u128d || u128i) ? "ubo128"
+                           : ubod ? "ubo" : mode;
    int frag = -1;
    for (unsigned i = 0; i < sizeof(frags) / sizeof(frags[0]); i++)
       if (!strcmp(frags[i].name, frag_name))
@@ -260,9 +275,16 @@ int main(int argc, char **argv)
    float prio = 1;
    VkDeviceQueueCreateInfo qci = { .sType = VK_STRUCTURE_TYPE_DEVICE_QUEUE_CREATE_INFO, .queueFamilyIndex = 0,
                                    .queueCount = 1, .pQueuePriorities = &prio };
-   const char *dev_exts[] = { "VK_EXT_pipeline_creation_feedback" };
-   VkDeviceCreateInfo dci = { .sType = VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO, .queueCreateInfoCount = 1,
-                              .pQueueCreateInfos = &qci, .enabledExtensionCount = (getenv("VKBENCH_CACHE") || getenv("VKBENCH_FEEDBACK")) ? 1 : 0,
+   const char *dev_exts[2];
+   uint32_t n_exts = 0;
+   if (getenv("VKBENCH_CACHE") || getenv("VKBENCH_FEEDBACK"))
+      dev_exts[n_exts++] = "VK_EXT_pipeline_creation_feedback";
+   VkPhysicalDeviceInlineUniformBlockFeaturesEXT iubf = {
+      .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_INLINE_UNIFORM_BLOCK_FEATURES_EXT, .inlineUniformBlock = VK_TRUE };
+   if (u128i)
+      dev_exts[n_exts++] = "VK_EXT_inline_uniform_block";
+   VkDeviceCreateInfo dci = { .sType = VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO, .pNext = u128i ? &iubf : NULL,
+                              .queueCreateInfoCount = 1, .pQueueCreateInfos = &qci, .enabledExtensionCount = n_exts,
                               .ppEnabledExtensionNames = dev_exts };
    CHECK(vkCreateDevice(pd, &dci, NULL, &dev));
 #define LOAD(f)                                                   \
@@ -327,19 +349,24 @@ int main(int argc, char **argv)
                                .addressModeW = VK_SAMPLER_ADDRESS_MODE_REPEAT, .maxLod = 0 };
    VkSampler sampler;
    CHECK(vkCreateSampler(dev, &sci, NULL, &sampler));
-   const int ubo = !strcmp(mode, "ubo");
    VkDescriptorSetLayoutBinding dlb[2] = { { 0, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1,
                                              VK_SHADER_STAGE_FRAGMENT_BIT, NULL },
-                                           { 1, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 1,
-                                             VK_SHADER_STAGE_FRAGMENT_BIT, NULL } };
+                                           { 1, u128i ? VK_DESCRIPTOR_TYPE_INLINE_UNIFORM_BLOCK_EXT
+                                                      : VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,
+                                             u128i ? 128 : 1, VK_SHADER_STAGE_FRAGMENT_BIT, NULL } };
    VkDescriptorSetLayoutCreateInfo dli = { .sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO,
-                                           .bindingCount = ubo ? 2 : 1, .pBindings = dlb };
+                                           .bindingCount = has_b1 ? 2 : 1, .pBindings = dlb };
    VkDescriptorSetLayout dsl;
    CHECK(vkCreateDescriptorSetLayout(dev, &dli, NULL, &dsl));
    VkDescriptorPoolSize ps[2] = { { VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1 },
-                                  { VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 1 } };
-   VkDescriptorPoolCreateInfo dpi = { .sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO, .maxSets = 1,
-                                      .poolSizeCount = ubo ? 2 : 1, .pPoolSizes = ps };
+                                  { u128i ? VK_DESCRIPTOR_TYPE_INLINE_UNIFORM_BLOCK_EXT : VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,
+                                    u128i ? 128 : 1 } };
+   VkDescriptorPoolInlineUniformBlockCreateInfoEXT dpiub = {
+      .sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_INLINE_UNIFORM_BLOCK_CREATE_INFO_EXT,
+      .maxInlineUniformBlockBindings = 1 };
+   VkDescriptorPoolCreateInfo dpi = { .sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO,
+                                      .pNext = u128i ? &dpiub : NULL, .maxSets = 1,
+                                      .poolSizeCount = has_b1 ? 2 : 1, .pPoolSizes = ps };
    VkDescriptorPool dpool;
    CHECK(vkCreateDescriptorPool(dev, &dpi, NULL, &dpool));
    VkDescriptorSetAllocateInfo dai = { .sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO,
@@ -350,20 +377,93 @@ int main(int argc, char **argv)
    VkWriteDescriptorSet wds = { .sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, .dstSet = set,
                                 .descriptorCount = 1, .descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
                                 .pImageInfo = &dii };
-   if (ubo) {
-      /* 8 vec4, 8 ivec4 (alternating flags), 16 floats at a 16-byte stride (std140). */
-      VkBuffer ub;
-      float *u = host_buffer(sizeof(float) * 4 * 32, VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT, &ub);
-      for (unsigned i = 0; i < 32 * 4; i++)
-         u[i] = 0.05f + 0.03f * (float)(i % 11);
-      int32_t *m = (int32_t *)u + 8 * 4;
-      for (unsigned i = 0; i < 8 * 4; i++)
-         m[i] = ((i * 7u + 3u) % 5u) != 0;
+   float u128[32]; /* 128 B std140: vec4 v[5] at 0, ivec4 m[3] at 80, 16 B pad (also the push constants) */
+   if (has_b1 || u128p) {
+      const char *uf = getenv("UBO_FLAGS");
+      if (u128h || u128d || u128i || u128p) {
+         for (unsigned i = 0; i < 32; i++)
+            u128[i] = 0.05f + 0.03f * (float)(i % 11);
+         int32_t *m = (int32_t *)u128 + 20;
+         for (unsigned i = 0; i < 12; i++)
+            m[i] = uf ? atoi(uf) != 0 : ((i * 7u + 3u) % 5u) != 0;
+         for (unsigned i = 0; i < 4; i++)
+            ((int32_t *)u128)[28 + i] = 0;
+      }
+   }
+   if (has_b1) {
+      VkBuffer ub = VK_NULL_HANDLE;
+      float u512[32 * 4];
+      const void *udata = u128;
+      VkDeviceSize usize = 128;
+      if (ubo || ubod) {
+         /* 8 vec4, 8 ivec4 (alternating flags), 16 floats at a 16-byte stride (std140). */
+         for (unsigned i = 0; i < 32 * 4; i++)
+            u512[i] = 0.05f + 0.03f * (float)(i % 11);
+         int32_t *m = (int32_t *)u512 + 8 * 4;
+         for (unsigned i = 0; i < 8 * 4; i++)
+            m[i] = ((i * 7u + 3u) % 5u) != 0;
+         udata = u512;
+         usize = sizeof(u512);
+      }
+      if (u128i) {
+         /* the data goes into the descriptor set itself */
+      } else if (ubod || u128d) {
+         /* device-local, not host-visible if the device has such a type; filled by a staging copy */
+         VkBufferCreateInfo bci = { .sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO, .size = usize,
+                                    .usage = VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT };
+         CHECK(vkCreateBuffer(dev, &bci, NULL, &ub));
+         VkMemoryRequirements mr;
+         vkGetBufferMemoryRequirements(dev, ub, &mr);
+         int ti = -1, ti_vis = -1;
+         for (uint32_t i = 0; i < mp.memoryTypeCount; i++) {
+            const VkMemoryPropertyFlags f = mp.memoryTypes[i].propertyFlags;
+            if (!(mr.memoryTypeBits & (1u << i)) || !(f & VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT))
+               continue;
+            if (!(f & VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT) && ti < 0)
+               ti = (int)i;
+            if (ti_vis < 0)
+               ti_vis = (int)i;
+         }
+         if (ti < 0) {
+            printf("vkbench: NOTE no DEVICE_LOCAL memory type without HOST_VISIBLE for a UBO: the device-local run uses "
+                   "type %d (host-visible too), so the test is moot\n", ti_vis);
+            ti = ti_vis;
+         }
+         if (ti < 0) {
+            fprintf(stderr, "vkbench: no DEVICE_LOCAL memory type for a UBO\n");
+            return 1;
+         }
+         printf("vkbench: UBO memory type %d flags 0x%x\n", ti, mp.memoryTypes[ti].propertyFlags);
+         VkMemoryAllocateInfo mai = { .sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO, .allocationSize = mr.size,
+                                      .memoryTypeIndex = (uint32_t)ti };
+         VkDeviceMemory umem;
+         CHECK(vkAllocateMemory(dev, &mai, NULL, &umem));
+         CHECK(vkBindBufferMemory(dev, ub, umem, 0));
+         VkBuffer ustage;
+         void *sp = host_buffer(usize, VK_BUFFER_USAGE_TRANSFER_SRC_BIT, &ustage);
+         memcpy(sp, udata, usize);
+         begin();
+         VkBufferCopy bc = { 0, 0, usize };
+         vkCmdCopyBuffer(cb, ustage, ub, 1, &bc);
+         VkMemoryBarrier umb = { .sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER,
+                                 .srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT,
+                                 .dstAccessMask = VK_ACCESS_UNIFORM_READ_BIT };
+         vkCmdPipelineBarrier(cb, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT, 0, 1, &umb,
+                              0, NULL, 0, NULL);
+         submit_wait();
+      } else {
+         void *hp = host_buffer(usize, VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT, &ub);
+         memcpy(hp, udata, usize);
+      }
       VkDescriptorBufferInfo dbi = { ub, 0, VK_WHOLE_SIZE };
+      VkWriteDescriptorSetInlineUniformBlockEXT iub = {
+         .sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET_INLINE_UNIFORM_BLOCK_EXT, .dataSize = 128, .pData = u128 };
       VkWriteDescriptorSet wds2[2] = { wds, { .sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, .dstSet = set,
-                                               .dstBinding = 1, .descriptorCount = 1,
-                                               .descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,
-                                               .pBufferInfo = &dbi } };
+                                               .pNext = u128i ? &iub : NULL, .dstBinding = 1,
+                                               .descriptorCount = u128i ? 128 : 1,
+                                               .descriptorType = u128i ? VK_DESCRIPTOR_TYPE_INLINE_UNIFORM_BLOCK_EXT
+                                                                       : VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,
+                                               .pBufferInfo = u128i ? NULL : &dbi } };
       vkUpdateDescriptorSets(dev, 2, wds2, 0, NULL);
    } else {
       vkUpdateDescriptorSets(dev, 1, &wds, 0, NULL);
@@ -470,8 +570,10 @@ int main(int argc, char **argv)
    };
    VkPipelineColorBlendStateCreateInfo cbs = { .sType = VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO,
                                                .attachmentCount = 1, .pAttachments = &cba };
+   VkPushConstantRange pcr = { VK_SHADER_STAGE_FRAGMENT_BIT, 0, 128 };
    VkPipelineLayoutCreateInfo pli = { .sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO, .setLayoutCount = 1,
-                                      .pSetLayouts = &dsl };
+                                      .pSetLayouts = &dsl, .pushConstantRangeCount = u128p ? 1 : 0,
+                                      .pPushConstantRanges = &pcr };
    VkPipelineLayout pl;
    CHECK(vkCreatePipelineLayout(dev, &pli, NULL, &pl));
    VkGraphicsPipelineCreateInfo gpi = { .sType = VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO, .stageCount = 2,
@@ -527,7 +629,7 @@ int main(int argc, char **argv)
          n_hit++;                                                                              \
    } while (0)
    if (use_fb && getenv("VKBENCH_CACHE_ALL")) {
-      for (unsigned k = 0; k < 2 * (sizeof(frags) / sizeof(frags[0])); k++) {
+      for (unsigned k = 0; k < 2 * NFRAGS_CACHE; k++) {
          VkShaderModuleCreateInfo ksi = { .sType = VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO,
                                           .codeSize = frags[k / 2].size, .pCode = frags[k / 2].code };
          VkShaderModule kfs;
@@ -580,6 +682,8 @@ int main(int argc, char **argv)
       vkCmdBeginRenderPass(cb, &rbi, VK_SUBPASS_CONTENTS_INLINE);                        \
       vkCmdBindPipeline(cb, VK_PIPELINE_BIND_POINT_GRAPHICS, pipe);                      \
       vkCmdBindDescriptorSets(cb, VK_PIPELINE_BIND_POINT_GRAPHICS, pl, 0, 1, &set, 0, NULL); \
+      if (u128p)                                                                         \
+         vkCmdPushConstants(cb, pl, VK_SHADER_STAGE_FRAGMENT_BIT, 0, 128, u128);         \
       if (!nodraw)                                                                       \
          vkCmdDraw(cb, 3, 1, 0, 0);                                                      \
       vkCmdEndRenderPass(cb);                                                            \

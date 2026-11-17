@@ -379,9 +379,12 @@ static void pvr_alloc_fs_varyings(pco_data *data, nir_shader *nir)
 #define MAX_SETS 4
 #define MAX_BINDINGS 16
 
+/* -i: every UBO is an inline uniform block (VK_EXT_inline_uniform_block): shared registers via PDS DMA. */
+static bool opt_inline_ubo;
+
 /* Descriptor layout, derived from the shaders' variables (the driver gets it from the set layouts). */
 struct bind_info {
-   bool present, img_smp;
+   bool present, img_smp, inline_ubo;
    unsigned stage_mask;
    unsigned stride_dw;
    unsigned offset_dw;
@@ -401,7 +404,11 @@ static void layout_add(struct layout *l, nir_shader *nir)
       unsigned stride;
       bool smp = false;
       const struct glsl_type *t = glsl_without_array(var->type);
-      if (var->data.mode == nir_var_mem_ubo || var->data.mode == nir_var_mem_ssbo) {
+      bool inl = false;
+      if (var->data.mode == nir_var_mem_ubo && opt_inline_ubo) {
+         inl = true;
+         stride = glsl_get_explicit_size(t, false) / 4;
+      } else if (var->data.mode == nir_var_mem_ubo || var->data.mode == nir_var_mem_ssbo) {
          stride = 4;
       } else if (var->data.mode == nir_var_uniform && glsl_type_is_sampler(t)) {
          stride = IMG_DW + SMP_DW;
@@ -419,6 +426,7 @@ static void layout_add(struct layout *l, nir_shader *nir)
       struct bind_info *bi = &l->b[var->data.descriptor_set][var->data.binding];
       bi->present = true;
       bi->img_smp = smp;
+      bi->inline_ubo = inl;
       bi->stride_dw = stride * MAX2(1, glsl_type_is_array(var->type) ? glsl_get_aoa_size(var->type) : 1);
       bi->stage_mask |= BITFIELD_BIT(nir->info.stage);
       l->set_stages[var->data.descriptor_set] |= BITFIELD_BIT(nir->info.stage);
@@ -444,8 +452,10 @@ static void init_descriptors(void *mem_ctx, pco_data *data, nir_shader *nir, con
       pco_descriptor_set_data *d = &data->common.desc_sets[s];
       d->binding_count = MAX_BINDINGS;
       d->bindings = rzalloc_array_size(mem_ctx, sizeof(*d->bindings), MAX_BINDINGS);
-      for (unsigned b = 0; b < MAX_BINDINGS; b++)
+      for (unsigned b = 0; b < MAX_BINDINGS; b++) {
          d->bindings[b].is_img_smp = l->b[s][b].img_smp;
+         d->bindings[b].is_inline_ubo = l->b[s][b].inline_ubo;
+      }
    }
 }
 
@@ -640,6 +650,8 @@ int main(int argc, char **argv)
          nrt = atoi(argv[++i]);
          if (nrt < 1 || nrt > 4)
             goto usage;
+      } else if (!strcmp(argv[i], "-i")) {
+         opt_inline_ubo = true;
       } else if (!strcmp(argv[i], "-d")) {
          dump = true;
       } else {
@@ -649,8 +661,8 @@ int main(int argc, char **argv)
    if (argc - i != 2 && argc - i != 3) {
 usage:
       fprintf(stderr,
-              "usage: pco_stats [-f rgba8|rgba16f|rgba32f] [-b] [-n rts] [-r] [-d] <name> <vs.spv|-> <fs.spv>\n"
-              "  one line per shader on stdout; -b src-alpha/one-minus-src-alpha blend on every attachment, -n number of identical colour attachments (1..4), -r robustBufferAccess, -d also print the IR to stderr\n");
+              "usage: pco_stats [-f rgba8|rgba16f|rgba32f] [-b] [-n rts] [-r] [-i] [-d] <name> <vs.spv|-> <fs.spv>\n"
+              "  one line per shader on stdout; -b src-alpha/one-minus-src-alpha blend on every attachment, -n number of identical colour attachments (1..4), -r robustBufferAccess, -i UBOs are inline uniform blocks, -d also print the IR to stderr\n");
       return 1;
    }
    const char *name = argv[i], *vs_path = argv[i + 1], *fs_path = argv[i + 2];
