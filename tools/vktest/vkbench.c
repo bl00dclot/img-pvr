@@ -224,6 +224,15 @@ int main(int argc, char **argv)
    const int u128p = !strcmp(mode, "u128p") || u128k || u128k0, u128i = !strcmp(mode, "u128i");
    const int u128d = !strcmp(mode, "u128d"), u128h = !strcmp(mode, "u128h");
    const int ubo = !strcmp(mode, "ubo"), ubod = !strcmp(mode, "ubod");
+   /* XCLIPSE: ubofix. UBO_DYN=whole|range (mode ubo): binding 1 is a UNIFORM_BUFFER_DYNAMIC in a 4096 B host-visible buffer.
+    * whole: the descriptor range is VK_WHOLE_SIZE and the dynamic offset puts the window at the end of the buffer with only
+    * UBO_DYN_VALID bytes (default 256) of the data in it (the same sum as UBO_TAILZERO=<valid> without dynamic offsets: the
+    * rest of the block must read as zero, the driver must not read past the buffer). range: an explicit range of 512 B at
+    * dynamic offset 1024 (the same sum as plain ubo: an explicit range is not reduced by the dynamic offset). */
+   const char *ubo_dyn = getenv("UBO_DYN");
+   const int udyn = ubo && ubo_dyn && (!strcmp(ubo_dyn, "whole") || !strcmp(ubo_dyn, "range"));
+   const int udyn_whole = udyn && !strcmp(ubo_dyn, "whole");
+   uint32_t dyn_off = 0;
    const int ubo_buf = ubo || ubod || u128h || u128d; /* binding 1 is a UBO */
    const int has_b1 = ubo_buf || u128i;
    const char *frag_name = (blend || load) ? "fill" : u128k ? "ubo128k" : u128k0 ? "ubo128k0" : u128p ? "ubo128p" : (u128h || u128d || u128i) ? "ubo128"
@@ -354,14 +363,16 @@ int main(int argc, char **argv)
    VkDescriptorSetLayoutBinding dlb[2] = { { 0, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1,
                                              VK_SHADER_STAGE_FRAGMENT_BIT, NULL },
                                            { 1, u128i ? VK_DESCRIPTOR_TYPE_INLINE_UNIFORM_BLOCK_EXT
-                                                      : VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,
+                                                      : udyn ? VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER_DYNAMIC
+                                                             : VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,
                                              u128i ? 128 : 1, VK_SHADER_STAGE_FRAGMENT_BIT, NULL } };
    VkDescriptorSetLayoutCreateInfo dli = { .sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO,
                                            .bindingCount = has_b1 ? 2 : 1, .pBindings = dlb };
    VkDescriptorSetLayout dsl;
    CHECK(vkCreateDescriptorSetLayout(dev, &dli, NULL, &dsl));
    VkDescriptorPoolSize ps[2] = { { VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1 },
-                                  { u128i ? VK_DESCRIPTOR_TYPE_INLINE_UNIFORM_BLOCK_EXT : VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,
+                                  { u128i ? VK_DESCRIPTOR_TYPE_INLINE_UNIFORM_BLOCK_EXT
+                                          : udyn ? VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER_DYNAMIC : VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,
                                     u128i ? 128 : 1 } };
    VkDescriptorPoolInlineUniformBlockCreateInfoEXT dpiub = {
       .sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_INLINE_UNIFORM_BLOCK_CREATE_INFO_EXT,
@@ -454,8 +465,22 @@ int main(int argc, char **argv)
                               0, NULL, 0, NULL);
          submit_wait();
       } else {
-         void *hp = host_buffer(usize, VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT, &ub);
-         memcpy(hp, udata, usize);
+         void *hp;
+         if (udyn) {
+            hp = host_buffer(4096, VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT, &ub);
+            memset(hp, 0, 4096);
+            const uint32_t valid = getenv("UBO_DYN_VALID") ? (uint32_t)atoi(getenv("UBO_DYN_VALID")) : 256;
+            if (udyn_whole) {
+               dyn_off = 4096 - valid;
+               memcpy((uint8_t *)hp + dyn_off, udata, valid);
+            } else {
+               dyn_off = 1024;
+               memcpy((uint8_t *)hp + dyn_off, udata, usize);
+            }
+         } else {
+            hp = host_buffer(usize, VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT, &ub);
+            memcpy(hp, udata, usize);
+         }
          if (ubo) {
             ubo_vkbuf = ub;
             /* UBO_TAILZERO=<bytes>: zero the buffer from this offset on (the reference of UBO_RANGE). */
@@ -467,14 +492,15 @@ int main(int argc, char **argv)
             }
          }
       }
-      VkDescriptorBufferInfo dbi = { ub, 0, VK_WHOLE_SIZE };
+      VkDescriptorBufferInfo dbi = { ub, 0, udyn && !udyn_whole ? 512 : VK_WHOLE_SIZE };
       VkWriteDescriptorSetInlineUniformBlockEXT iub = {
          .sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET_INLINE_UNIFORM_BLOCK_EXT, .dataSize = 128, .pData = u128 };
       VkWriteDescriptorSet wds2[2] = { wds, { .sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, .dstSet = set,
                                                .pNext = u128i ? &iub : NULL, .dstBinding = 1,
                                                .descriptorCount = u128i ? 128 : 1,
                                                .descriptorType = u128i ? VK_DESCRIPTOR_TYPE_INLINE_UNIFORM_BLOCK_EXT
-                                                                       : VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,
+                                                                       : udyn ? VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER_DYNAMIC
+                                                                              : VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,
                                                .pBufferInfo = u128i ? NULL : &dbi } };
       vkUpdateDescriptorSets(dev, 2, wds2, 0, NULL);
    } else {
@@ -693,7 +719,7 @@ int main(int argc, char **argv)
       rbi.framebuffer = fbs[pass_no++ % nfb];                                            \
       vkCmdBeginRenderPass(cb, &rbi, VK_SUBPASS_CONTENTS_INLINE);                        \
       vkCmdBindPipeline(cb, VK_PIPELINE_BIND_POINT_GRAPHICS, pipe);                      \
-      vkCmdBindDescriptorSets(cb, VK_PIPELINE_BIND_POINT_GRAPHICS, pl, 0, 1, &set, 0, NULL); \
+      vkCmdBindDescriptorSets(cb, VK_PIPELINE_BIND_POINT_GRAPHICS, pl, 0, 1, &set, udyn ? 1 : 0, &dyn_off); \
       if (u128p)                                                                         \
          vkCmdPushConstants(cb, pl, VK_SHADER_STAGE_FRAGMENT_BIT, 0, 128, u128);         \
       if (!nodraw)                                                                       \
