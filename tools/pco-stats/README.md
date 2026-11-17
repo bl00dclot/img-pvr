@@ -19,7 +19,7 @@ tools/pco-stats/run.sh after.txt
 tools/pco-stats/compare.py before.txt after.txt [-s igrps,temps,spills,code_size,smp] [-a]
 ```
 
-`pco_stats` itself: `pco_stats [-f rgba8|rgba16f|rgba32f] [-b] [-n rts] [-r] [-d] <name> <vs.spv|-> <fs.spv>`, two lines out
+`pco_stats` itself: `pco_stats [-f rgba8|rgba16f|rgba32f] [-b] [-n rts] [-r] [-i] [-d] <name> <vs.spv|-> <fs.spv>`, two lines out
 (`vs`, `fs`), `-d` prints the grouped IR to stderr, `-n` is the number of identical colour attachments (1 to 4, outputs
 at registers 0, 1, ...; `-b` blends all of them). Needs the vertex shader too, because `pco_link_nir`
 changes the fragment shader's inputs.

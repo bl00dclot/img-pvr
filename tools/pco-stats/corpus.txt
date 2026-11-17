@@ -17,3 +17,7 @@ probe/t1      probe:fs.vert    probe:t1.frag    -b
 probe/t1nb    probe:fs.vert    probe:t1.frag
 probe/t2      probe:t2.vert    probe:t2.frag
 probe/t3sep   probe:fs.vert    probe:t3sep.frag
+# ubomeas (board 4): the 128 B variants; u128i = the ubo128 shader with its block as an inline uniform block (-i), u128p = push constants
+bench/ubo128  bench:vert.vert  bench:ubo128.frag
+bench/ubo128i bench:vert.vert  bench:ubo128.frag  -i
+bench/ubo128p bench:vert.vert  bench:ubo128p.frag

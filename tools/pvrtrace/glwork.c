@@ -270,6 +270,40 @@ static int bench(int argc, char **argv)
       { "alum", "mediump float x = uv.x, y = uv.y; for (int i = 0; i < 32; i++) { x = fract(x * 1.37 + y); "
                 "y = fract(y * 1.11 + x); } o = vec4(x, y, 0.0, 1.0);" },
       { "tvm", "mediump vec4 c = texture(t, uv); o = c;" },
+      /* XCLIPSE: ubomeas: the vkbench ubo / ubo128 shaders. ubo, ubo128: a std140 UBO; ubol, ubo128l: the same
+       * values as loose uniforms (what the game does). Data and sums equal vkbench's ubo and u128* modes. */
+      { "ubo", "vec4 c = texture(t, uv); vec3 a = c.rgb; "
+        "if (m[0].x != 0) a = a * v[0].x + vec3(v[0].y); if (m[0].y != 0) a = a * v[1].x + vec3(v[1].z); "
+        "if (m[1].x != 0) a = mix(a, vec3(v[2].x, v[2].y, v[2].z), s[0]); if (m[1].y != 0) a = a * s[1] + vec3(s[2]); "
+        "if (m[2].x != 0) a = a * v[3].w + vec3(v[4].x); if (m[2].y != 0) a = mix(a, vec3(s[3], s[4], s[5]), v[4].y); "
+        "if (m[3].x != 0) a = a * s[6] + vec3(s[7]); if (m[3].y != 0) a = a * v[5].x + vec3(v[5].y, v[6].x, v[6].y); "
+        "if (m[4].x != 0) a = a * s[8] + vec3(s[9]); if (m[4].y != 0) a = mix(a, vec3(v[7].x), s[10]); "
+        "if (m[5].x != 0) a = a * s[11] + vec3(s[12]); if (m[5].y != 0) a = a + vec3(s[13], s[14], s[15]); "
+        "o = vec4(clamp(a, 0.0, 1.0), c.a);"},
+      { "ubol", "vec4 c = texture(t, uv); vec3 a = c.rgb; "
+        "if (m[0].x != 0) a = a * v[0].x + vec3(v[0].y); if (m[0].y != 0) a = a * v[1].x + vec3(v[1].z); "
+        "if (m[1].x != 0) a = mix(a, vec3(v[2].x, v[2].y, v[2].z), s[0]); if (m[1].y != 0) a = a * s[1] + vec3(s[2]); "
+        "if (m[2].x != 0) a = a * v[3].w + vec3(v[4].x); if (m[2].y != 0) a = mix(a, vec3(s[3], s[4], s[5]), v[4].y); "
+        "if (m[3].x != 0) a = a * s[6] + vec3(s[7]); if (m[3].y != 0) a = a * v[5].x + vec3(v[5].y, v[6].x, v[6].y); "
+        "if (m[4].x != 0) a = a * s[8] + vec3(s[9]); if (m[4].y != 0) a = mix(a, vec3(v[7].x), s[10]); "
+        "if (m[5].x != 0) a = a * s[11] + vec3(s[12]); if (m[5].y != 0) a = a + vec3(s[13], s[14], s[15]); "
+        "o = vec4(clamp(a, 0.0, 1.0), c.a);"},
+      { "ubo128", "vec4 c = texture(t, uv); vec3 a = c.rgb; "
+        "if (m[0].x != 0) a = a * v[0].x + vec3(v[0].y); if (m[0].y != 0) a = a * v[0].z + vec3(v[0].w); "
+        "if (m[0].z != 0) a = mix(a, vec3(v[1].x, v[1].y, v[1].z), v[1].w); if (m[0].w != 0) a = a * v[2].x + vec3(v[2].y); "
+        "if (m[1].x != 0) a = a * v[2].z + vec3(v[2].w, v[3].x, v[3].y); if (m[1].y != 0) a = mix(a, vec3(v[3].z), v[3].w); "
+        "if (m[1].z != 0) a = a * v[4].x + vec3(v[4].y); if (m[1].w != 0) a = a + vec3(v[4].z, v[4].w, v[0].x); "
+        "if (m[2].x != 0) a = a * v[1].x + vec3(v[2].x); if (m[2].y != 0) a = mix(a, vec3(v[3].y, v[3].z, v[3].w), v[4].x); "
+        "if (m[2].z != 0) a = a * v[0].w + vec3(v[1].y); if (m[2].w != 0) a = a + vec3(v[2].z, v[3].x, v[4].w); "
+        "o = vec4(clamp(a, 0.0, 1.0), c.a);"},
+      { "ubo128l", "vec4 c = texture(t, uv); vec3 a = c.rgb; "
+        "if (m[0].x != 0) a = a * v[0].x + vec3(v[0].y); if (m[0].y != 0) a = a * v[0].z + vec3(v[0].w); "
+        "if (m[0].z != 0) a = mix(a, vec3(v[1].x, v[1].y, v[1].z), v[1].w); if (m[0].w != 0) a = a * v[2].x + vec3(v[2].y); "
+        "if (m[1].x != 0) a = a * v[2].z + vec3(v[2].w, v[3].x, v[3].y); if (m[1].y != 0) a = mix(a, vec3(v[3].z), v[3].w); "
+        "if (m[1].z != 0) a = a * v[4].x + vec3(v[4].y); if (m[1].w != 0) a = a + vec3(v[4].z, v[4].w, v[0].x); "
+        "if (m[2].x != 0) a = a * v[1].x + vec3(v[2].x); if (m[2].y != 0) a = mix(a, vec3(v[3].y, v[3].z, v[3].w), v[4].x); "
+        "if (m[2].z != 0) a = a * v[0].w + vec3(v[1].y); if (m[2].w != 0) a = a + vec3(v[2].z, v[3].x, v[4].w); "
+        "o = vec4(clamp(a, 0.0, 1.0), c.a);"},
    };
    const char *mode = argc > 2 ? argv[2] : "fill";
    const int iterations = argc > 3 ? atoi(argv[3]) : 10;
@@ -317,16 +351,64 @@ static int bench(int argc, char **argv)
       return 1;
    }
 
-   char fs[1024];
+   /* declarations of the ubo family; empty for every other mode */
+   const char *decl = "";
+   const int is128 = !strcmp(mode, "ubo128") || !strcmp(mode, "ubo128l");
+   const int is512 = !strcmp(mode, "ubo") || !strcmp(mode, "ubol");
+   const int loose = !strcmp(mode, "ubol") || !strcmp(mode, "ubo128l");
+   if (is512)
+      decl = loose ? "precision highp int;uniform vec4 v[8];uniform ivec4 m[8];uniform float s[16];"
+                   : "precision highp int;layout(std140) uniform U { vec4 v[8]; ivec4 m[8]; float s[16]; };";
+   if (is128)
+      decl = loose ? "precision highp int;uniform vec4 v[5];uniform ivec4 m[3];"
+                   : "precision highp int;layout(std140) uniform U { vec4 v[5]; ivec4 m[3]; };";
+   char fs[4096];
    snprintf(fs, sizeof(fs),
-            "#version 300 es\nprecision highp float;uniform sampler2D t;in vec2 uv;out vec4 o;void main(){%s}",
-            body);
+            "#version 300 es\nprecision highp float;uniform sampler2D t;%sin vec2 uv;out vec4 o;void main(){%s}",
+            decl, body);
    GLuint p = prog(GL_VERTEX_SHADER,
                    "#version 300 es\nout vec2 uv;void main(){vec2 p=vec2((gl_VertexID<<1)&2,gl_VertexID&2);"
                    "uv=p;gl_Position=vec4(p*2.0-1.0,0,1);}",
                    GL_FRAGMENT_SHADER, fs);
    glUseProgram(p);
    glUniform1i(glGetUniformLocation(p, "t"), 0);
+   if (is512 || is128) {
+      static float ud[32 * 4];
+      static int32_t mi[32];
+      for (unsigned i = 0; i < 32 * 4; i++)
+         ud[i] = 0.05f + 0.03f * (float)(i % 11);
+      if (is512) { /* as vkbench ubo: 8 vec4, 8 ivec4, 16 floats at a 16 byte stride */
+         for (unsigned i = 0; i < 8 * 4; i++)
+            mi[i] = ((i * 7u + 3u) % 5u) != 0;
+         memcpy((int32_t *)ud + 8 * 4, mi, sizeof(int32_t) * 8 * 4);
+      } else { /* as vkbench u128*: vec4 v[5], ivec4 m[3], pad; UBO_FLAGS=0|1 sets all 12 flags */
+         const char *uf = getenv("UBO_FLAGS");
+         for (unsigned i = 0; i < 12; i++)
+            mi[i] = uf ? atoi(uf) != 0 : ((i * 7u + 3u) % 5u) != 0;
+         memcpy((int32_t *)ud + 20, mi, sizeof(int32_t) * 12);
+         /* XCLIPSE: as in vkbench this zeroes m[8..11] (the last ivec4), 6 of 12 flags on; UBO_M12=1 keeps them. */
+         if (!getenv("UBO_M12"))
+            memset((int32_t *)ud + 28, 0, 16);
+      }
+      if (loose) {
+         const unsigned nv = is512 ? 8 : 5, nm = is512 ? 8 : 3;
+         glUniform4fv(glGetUniformLocation(p, "v"), (GLsizei)nv, ud);
+         glUniform4iv(glGetUniformLocation(p, "m"), (GLsizei)nm, (const GLint *)ud + nv * 4);
+         if (is512) {
+            float sv[16];
+            for (unsigned i = 0; i < 16; i++)
+               sv[i] = ud[(16 + i) * 4];
+            glUniform1fv(glGetUniformLocation(p, "s[0]"), 16, sv);
+         }
+      } else {
+         GLuint ub;
+         glGenBuffers(1, &ub);
+         glBindBuffer(GL_UNIFORM_BUFFER, ub);
+         glBufferData(GL_UNIFORM_BUFFER, is512 ? 512 : 128, ud, GL_STATIC_DRAW);
+         glUniformBlockBinding(p, glGetUniformBlockIndex(p, "U"), 0);
+         glBindBufferBase(GL_UNIFORM_BUFFER, 0, ub);
+      }
+   }
    glActiveTexture(GL_TEXTURE0);
    glBindTexture(GL_TEXTURE_2D, tex);
    {
@@ -371,11 +453,18 @@ static int bench(int argc, char **argv)
       ged_freq(f0, sizeof(f0));
       const double c0 = cpu_ms();
       clock_gettime(CLOCK_MONOTONIC, &t0);
+      /* XCLIPSE: BENCH_FINISH=1: a glFinish after every timed pass, so that each pass is its own 3D job in the trace
+       * (the vendor driver otherwise merges about 65 flushed passes into one job); run it after the warm-up so the
+       * clock is at 680 MHz. The wall time then includes the per-pass idle gap. */
+      const int fin = getenv("BENCH_FINISH") != NULL;
       for (int it = 0; it < iterations; it++) {
          if (!blend)
             glClear(GL_COLOR_BUFFER_BIT);
          glDrawArrays(GL_TRIANGLES, 0, 3);
-         glFlush();
+         if (fin)
+            glFinish();
+         else
+            glFlush();
       }
       glFinish();
       clock_gettime(CLOCK_MONOTONIC, &t1);
