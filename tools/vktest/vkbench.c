@@ -100,7 +100,7 @@ static const struct {
    size_t size;
 } frags[] = {
 #define F(n) { #n, spv_##n##_frag, sizeof(spv_##n##_frag) }
-   F(fill), F(tv), F(tf), F(td), F(c1), F(c2), F(fetch), F(disc), F(alu), F(alum), F(tvm), F(ubo), F(ubo128), F(ubo128p), F(ubo128k), F(ubo128k0),
+   F(fill), F(tv), F(tf), F(td), F(c1), F(c2), F(fetch), F(disc), F(alu), F(alum), F(tvm), F(ubo), F(ubo128), F(ubo128p), F(ubo128k), F(ubo128k0), F(ubox),
 #undef F
 };
 
@@ -234,8 +234,13 @@ int main(int argc, char **argv)
    const int udyn_whole = udyn && !strcmp(ubo_dyn, "whole");
    uint32_t dyn_off = 0;
    const int ubo_buf = ubo || ubod || u128h || u128d; /* binding 1 is a UBO */
+   /* XCLIPSE: ubofix. ubox: two UBOs (bindings 1, 2) whose promoted ranges are back to back, and UBO_PAD=<n> extra unused UBO
+    * descriptors (binding 3, 4 dwords each) that move the ranges' first shared register in steps of 4: the vec4 read of the second
+    * range starts at an odd register, so some n makes it a repeat across shared register 255 -> 256. */
+   const int ubox = !strcmp(mode, "ubox");
+   const int ubox_pad = ubox && getenv("UBO_PAD") ? atoi(getenv("UBO_PAD")) : 0;
    const int has_b1 = ubo_buf || u128i;
-   const char *frag_name = (blend || load) ? "fill" : u128k ? "ubo128k" : u128k0 ? "ubo128k0" : u128p ? "ubo128p" : (u128h || u128d || u128i) ? "ubo128"
+   const char *frag_name = ubox ? "ubox" : (blend || load) ? "fill" : u128k ? "ubo128k" : u128k0 ? "ubo128k0" : u128p ? "ubo128p" : (u128h || u128d || u128i) ? "ubo128"
                            : ubod ? "ubo" : mode;
    int frag = -1;
    for (unsigned i = 0; i < sizeof(frags) / sizeof(frags[0]); i++)
@@ -360,26 +365,29 @@ int main(int argc, char **argv)
                                .addressModeW = VK_SAMPLER_ADDRESS_MODE_REPEAT, .maxLod = 0 };
    VkSampler sampler;
    CHECK(vkCreateSampler(dev, &sci, NULL, &sampler));
-   VkDescriptorSetLayoutBinding dlb[2] = { { 0, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1,
+   VkDescriptorSetLayoutBinding dlb[4] = { { 0, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1,
                                              VK_SHADER_STAGE_FRAGMENT_BIT, NULL },
                                            { 1, u128i ? VK_DESCRIPTOR_TYPE_INLINE_UNIFORM_BLOCK_EXT
                                                       : udyn ? VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER_DYNAMIC
                                                              : VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,
-                                             u128i ? 128 : 1, VK_SHADER_STAGE_FRAGMENT_BIT, NULL } };
+                                             u128i ? 128 : 1, VK_SHADER_STAGE_FRAGMENT_BIT, NULL },
+                                           { 2, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 1, VK_SHADER_STAGE_FRAGMENT_BIT, NULL },
+                                           { 3, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, (uint32_t)(ubox_pad > 0 ? ubox_pad : 1),
+                                             VK_SHADER_STAGE_FRAGMENT_BIT, NULL } };
    VkDescriptorSetLayoutCreateInfo dli = { .sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO,
-                                           .bindingCount = has_b1 ? 2 : 1, .pBindings = dlb };
+                                           .bindingCount = ubox ? (ubox_pad > 0 ? 4 : 3) : has_b1 ? 2 : 1, .pBindings = dlb };
    VkDescriptorSetLayout dsl;
    CHECK(vkCreateDescriptorSetLayout(dev, &dli, NULL, &dsl));
    VkDescriptorPoolSize ps[2] = { { VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1 },
                                   { u128i ? VK_DESCRIPTOR_TYPE_INLINE_UNIFORM_BLOCK_EXT
                                           : udyn ? VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER_DYNAMIC : VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,
-                                    u128i ? 128 : 1 } };
+                                    u128i ? 128 : ubox ? 2 + ubox_pad : 1 } };
    VkDescriptorPoolInlineUniformBlockCreateInfoEXT dpiub = {
       .sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_INLINE_UNIFORM_BLOCK_CREATE_INFO_EXT,
       .maxInlineUniformBlockBindings = 1 };
    VkDescriptorPoolCreateInfo dpi = { .sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO,
                                       .pNext = u128i ? &dpiub : NULL, .maxSets = 1,
-                                      .poolSizeCount = has_b1 ? 2 : 1, .pPoolSizes = ps };
+                                      .poolSizeCount = has_b1 || ubox ? 2 : 1, .pPoolSizes = ps };
    VkDescriptorPool dpool;
    CHECK(vkCreateDescriptorPool(dev, &dpi, NULL, &dpool));
    VkDescriptorSetAllocateInfo dai = { .sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO,
@@ -516,6 +524,19 @@ int main(int argc, char **argv)
                                                                               : VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,
                                                .pBufferInfo = u128i ? NULL : &dbi } };
       vkUpdateDescriptorSets(dev, 2, wds2, 0, NULL);
+   } else if (ubox) {
+      static const float da[4] = { 0.30f, 0.20f, 0.10f, 0.9f }, db[6] = { 0.11f, 0.22f, 0.33f, 0.44f, 0.5f, 0.6f };
+      VkBuffer ba, bb;
+      memcpy(host_buffer(16, VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT, &ba), da, sizeof(da));
+      memcpy(host_buffer(32, VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT, &bb), db, sizeof(db));
+      VkDescriptorBufferInfo ia = { ba, 0, VK_WHOLE_SIZE }, ib = { bb, 0, VK_WHOLE_SIZE };
+      VkWriteDescriptorSet wx[3] = { wds, { .sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, .dstSet = set, .dstBinding = 1,
+                                            .descriptorCount = 1, .descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,
+                                            .pBufferInfo = &ia },
+                                     { .sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, .dstSet = set, .dstBinding = 2,
+                                       .descriptorCount = 1, .descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,
+                                       .pBufferInfo = &ib } };
+      vkUpdateDescriptorSets(dev, 3, wx, 0, NULL);
    } else {
       vkUpdateDescriptorSets(dev, 1, &wds, 0, NULL);
    }

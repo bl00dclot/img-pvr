@@ -23,3 +23,4 @@ bench/ubo128i bench:vert.vert  bench:ubo128.frag  -i
 bench/ubo128p bench:vert.vert  bench:ubo128p.frag
 bench/ubowide  bench:vert.vert  stats:ubowide.frag
 bench/ubowidevs  stats:ubowide.vert  stats:ubowidevs.frag
+bench/ubox  bench:vert.vert  bench:ubox.frag
