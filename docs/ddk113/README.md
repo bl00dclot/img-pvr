@@ -14,12 +14,13 @@ passes, including partial renders (`TESTING.md` L0–L7). All four DDK 1.13 comm
   gives 8,443 passes and 229 known failures, kept as a baseline in `src/imagination/ci/`.
 - **Stability:** GPU recovery counters stayed unchanged in the native runs and in four of five in-app
   probe runs (one TA lockup, unexplained), and rose during the dEQP-VK `api` and `renderpass` subsets.
-- **Speed:** measured at one GPU clock (680 MHz; `TESTING.md`, 2026-11-16 entries), the GPU time of a
-  512x512 pass against the vendor GLES driver is 1.09x for a plain fill, 1.23x with discard, 1.44x (taking 0.472 ms) for
-  blending over loaded contents (its new 3D job time is bimodal: run medians 0.806, 0.472 and 0.801 ms; 0.472
-  is taken, not proven, see `TESTING.md` Open; the steady wall time is 0.646 -> 0.535 ms per pass), 1.56x for an ALU-heavy shader, and 0.88x for a texture read. The probe
-  passes, draws and chains were 2.3–3.9x slower than GLES on 2026-11-15 at mixed clock levels and have not
-  been compared with GLES at one clock since; uploads are 1.2–1.4x faster. "Next for speed" below lists what
+- **Speed:** measured at one GPU clock (680 MHz; `TESTING.md`, 2026-11-16 and 2026-11-17 entries), the GPU time
+  of a 512x512 pass against the vendor GLES driver after board 3 is 1.07x for a plain fill, 1.02x with discard,
+  1.32x for blending over loaded contents, 1.06x for an ALU-heavy shader and 0.89x for a texture read. A shader
+  that reads 28 scalars from a uniform buffer in 12 branches (`vkbench ubo`) is 26x slower than GLES and is the
+  largest gap left. On the probe, the render-pass chains are 13-23 % faster than before board 3 (T1 -13 %, T3 -19
+  to -23 %, instanced draws -14 %); the probe has not been compared with GLES at one clock since 2026-11-15
+  (then 2.3-3.9x slower, mixed clock levels); uploads are 1.2-1.4x faster. "Next for speed" below lists what
   remains.
 
 ## Target
@@ -86,7 +87,8 @@ expect a loader (dEQP-VK). Inside an app the ICD also needs a `libhardware.so` n
 
 Measured causes are in `TESTING.md` ("speed work"). In order of expected gain, as of 2026-11-15; the
 same-clock measurements of 2026-11-16 put texture reads at parity with GLES and leave fill, blending, discard
-and ALU as the gaps (`TESTING.md`, board 2, "Open"):
+and ALU as the gaps (`TESTING.md`, board 2, "Open"); board 3 closed most of those, and uniform-buffer reads are
+now the largest gap (`TESTING.md`, board 3):
 
 1. **Half-float texture results for relaxed-precision shaders.** Each 32-bit channel a texture read returns
    costs GPU time per fragment. Imagination's precision guide says Rogue stores `lowp` and `mediump` as

@@ -175,3 +175,65 @@ One entry per change, newest last. Every entry names its evidence. Every commit 
 - **docs:** `TESTING.md` entries for the clock and measurement method and for board 2; the speed status and the
   `tools/gputrace` row of `docs/ddk113/README.md` updated to them; `tools/gputrace/bench.sh` refuses to start
   unless the trace is already on. Drafted with an LLM; marker word per AGENTS.md: biblioklept.
+
+- **Board 3: forward propagation to a fixed point (`6950a69`):** `pco_opt_fwd_prop` repeats until nothing folds,
+  so `fract` (`x - floor(x)`) becomes one `fadd` with the `.neg` and `.flr` source modifiers instead of a
+  separate `floor` add. Evidence: `alu`/`alum` FS 202 -> 138 groups (the vendor's is 130); 4 shaders helped, 0
+  hurt. `PCO_DEBUG=no_fwdfix` restores one round.
+- **Co-issue (`d6a667b`, `026b8c4`):** after register allocation `pco_group_instrs` pairs an independent main-ALU
+  op with the next one in phase 0 and phase 1 of one group (no register hazard, encodings checked by
+  `pco_igrp_*_variant_fits()`), and hoists constant loads within their ALU run. `026b8c4`: no coefficient (`cf`)
+  register as a phase 1 source; one such pair failed `dEQP-VK.draw.*.linear_interpolation.offset_*` 3 of 3 runs
+  (found by dEQP, bisected to one pair on the phone), the encoding of the coefficient bank in the upper source
+  group is not established, so the pairing is avoided. After a review the same was applied to vertex-input and
+  shared registers (`7a2cce3`): no shader run on the device read them as S3-S5 (constants, which the checked
+  bench and probe shaders do read there, stay allowed); cost on the game's shaders +0.7 % groups, bench and probe
+  unchanged. Evidence: `blend` FS 7 -> 5 groups (vendor 4); 3D job
+  `blend` 0.452 -> 0.400 ms, `alu` 4.940 -> 3.332 ms (with the previous change). `PCO_DEBUG=no_coissue`.
+- **Backend destination legalisation (`c3a2f23`):** a destination that the instruction's backend mapping cannot
+  write (`po0` for `smp`) is copied after the instruction (and after its `wdf`), not before. This is the cause
+  of the 47 renderpass failures of board 2's first pixel-output fusion. Evidence: with `PCO_DEBUG=fuse_all`
+  (lifts board 2's restriction) renderpass 1/5 75 Fail -> 0; default code unchanged. `tools/vktest/test_smp_po0.sh`.
+- **`itrsmp`, fused iterate-and-sample (`c5b3549`, `e5961be`, `6ca7054`, `fdcec1b`):** a `smp` whose coordinate
+  is exactly one smooth interpolated input becomes one instruction (`itrsmp`) in place of `ditr`, its 3-group
+  fence and `smp`. The encoding was checked against one vendor group (same bytes apart from register numbers).
+  `6ca7054`: the IR validator had no case for shared-register operands and asserted on the first fused shader
+  in a debug build (release builds compile it out). `fdcec1b`: `itrsmp` carries its own `sched = wdf` instead of
+  a following `wdf` group. Evidence: `tv` FS 8 -> 2 groups, `disc` 12 -> 6; 3D job `tv` 0.271 -> 0.264, `disc`
+  0.358 -> 0.341 ms; the separate `wdf` fold itself is not measurably faster (ranges overlap) and is kept for
+  the group count. Known: a 1-channel read keeps a 4-register destination (temps +2 on two shaders).
+  `PCO_DEBUG=no_itrsmp`, `no_schedwdf`.
+- **Per-render cost (`527623b`, `6f9159b`):** the dummy object every render needs (a render without a primitive
+  locks up the 1.11 firmware) is a 32x32 triangle at the origin when the render area starts there, instead of the
+  clear state's quarter-framebuffer one; the kick's RETRY loop sleeps 100 us between answers. Evidence: `fill`
+  wall per pass -6.6 %, TA job 0.165 -> 0.139 ms; one-tile render 3D 0.141 -> 0.060 ms; RETRY loop: process CPU
+  per pass `fill` 0.290 -> 0.166 ms, wall unchanged (matters only with hundreds of kicks queued). Sums identical;
+  renderpass 1/5 and synchronization 1/20 0 changed.
+- **Uniform and storage reads (`073da0e`, `9cd563b`, `348b241`):**
+  - `073da0e`: the second `add64_32` of the dynamic offset is emitted only for dynamic buffer bindings
+    (`pco_binding_data.is_dynamic_buffer`, also in the pipeline cache record); the dword is zero otherwise.
+    `PCO_DEBUG=no_dynoff_skip` (bit 19, added after the board for bisecting) restores it for every buffer.
+  - `9cd563b`: the read address is one `imadd64` (shared registers can be read through three source slots only,
+    so the `add64_32` form copied the high word first); a constant offset is a product of two constant
+    registers (0..31 each). `PCO_DEBUG=no_imadd_addr`. A first version handed immediates to the ALU: a
+    release build encodes them silently and the phone took 20 GPU recoveries; the sanitizer/debug build caught
+    it, hence the rule that a debug-build run comes before the first phone run.
+  - `348b241`: the producer of a value that a phi copies writes the phi register itself, no lone copy.
+    `PCO_DEBUG=no_vreg_coalesce`.
+  - Evidence: game corpus (see `TESTING.md`) -16.4 % groups over the whole board; the game's lean fragment
+    shader 656 -> 524 groups for these three together.
+- **Review fixes after the board (`96668f5`, `19951c9`, `4db7da5`, `d2f62dc`, `ad4a9d8`):** `PCO_DEBUG=no_dynoff_skip`
+  (bit 19) for `073da0e`; a pipeline cache hit is rejected when its cached binding kinds (combined sampler, inline
+  uniform block, dynamic buffer) differ from the layout's; the kick's RETRY loop gives up after 10 s with
+  `VK_ERROR_DEVICE_LOST` (a full queue holds tens of ms of work); the dummy-object buffers are freed on the error
+  path of the static clear state; `vkbench BENCH_NODRAW=2` (draw in the first pass only) for the check that a
+  render without a draw keeps the whole render area. Evidence: `TESTING.md`, board 3.
+- **The `floor(-x)` fix (`b228a10`):** forwarding a consumer's `.flr` onto a source with `.abs` or `.neg`
+  cleared the modifiers (`floor(-x)` became `floor(x)`), exposed by `6950a69`'s fixed point. dEQP
+  `glsl.builtin.precision` (modf, roundeven) went Pass -> Fail; the common-function subset used earlier did not
+  contain them. Evidence: the four tests Pass again, full `glsl.builtin` (2131) 0 changed against the old driver.
+- **Tools (`afeee5d`, `806b306`, `15dd98a`, `7b5e093`, `875085c`):** `vkbench` prints the `vkQueueSubmit` time
+  alone, `BENCH_FBS`/`BENCH_RA`/`BENCH_NODRAW`, `jobgaps.py` (TA, hand-over, 3D and gaps per job), `tools/pco-stats`
+  `-c` (extra corpus), `-n` (colour attachments), vertex inputs, and the `vkbench ubo` mode.
+- **Debug flags:** `PCO_DEBUG` bits 11-17 and 19, table in `TESTING.md` (board 3).
+- **docs:** board 3 in `TESTING.md`, this list, the speed status in `README.md`. Drafted with an LLM; marker word per AGENTS.md: biblioklept.

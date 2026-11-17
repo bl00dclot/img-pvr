@@ -657,3 +657,161 @@ had 1.19x, from 0.346 against the pinned session's GLES 0.290), `blend` 1.44x ag
   constants in registers, co-issue), `alu` (`fract` as one `fadd`, about 64 groups, 1.56x).
 
 Drafted with an LLM; marker word per AGENTS.md: biblioklept.
+
+### 2026-11-17: board 3 (instruction grouping, fused iterate-and-sample, per-render cost, uniform reads)
+
+Base: `41bad10` (the pushed `ddk113`). Head: `b228a10` plus the three uniform commits (19 commits, `CHANGELOG.md`).
+Correctness bar as before: `vkbench` and probe pixel sums identical, dEQP-VK old driver against new on the same
+lists with per-test results diffed (0 changed), HWR counters unchanged.
+
+**What changed, by effect.**
+
+- Forward propagation to a fixed point: `fract` is one `fadd` with `.neg.flr` (alu 202 -> 136 groups, the vendor's
+  shader has 130). The fix `b228a10` stops a consumer's `.flr` from dropping `.abs`/`.neg` of the source
+  (`floor(-x)`).
+- Co-issue: independent main-ALU ops in phase 0 and phase 1 of one group, after register allocation, so no
+  register pressure change. Coefficient registers are kept out of phase 1 (a dEQP interpolation case failed with
+  them; how the upper source group encodes that bank is not established).
+- `itrsmp`: one instruction for a texture read at an interpolated input, with its own `wdf` in the scheduling
+  field; the validator now knows shared-register operands. Backend destinations (`po0` for `smp`) are copied after
+  the instruction, which fixes the cause of the board-2 pixel-output fusion failures.
+- Per render: a 32x32 dummy object instead of a quarter-framebuffer one, and a 100 us sleep between RETRY answers
+  of the kick.
+- Uniform reads: no dynamic-offset add for buffers that are not dynamic, one `imadd64` for the address, phi
+  registers written by the producer.
+
+**Debug flags** (`PCO_DEBUG=a,b`, default off; each restores the previous code for A/B runs; with all of them set
+the host compiler output is byte-identical to `41bad10`, below):
+
+| bit | flag | restores |
+|---|---|---|
+| 11 | `no_coissue` | one op per group |
+| 12 | `no_fwdfix` | one forward-propagation round |
+| 13 | `fuse_all` | (test) lifts board 2's `pck`/`movi32` limit on writing `po0` |
+| 14 | `no_itrsmp` | `ditr`, fence, `smp` |
+| 15 | `no_schedwdf` | `itrsmp` followed by a `wdf` group |
+| 16 | `no_imadd_addr` | `add64_32` buffer address |
+| 17 | `no_vreg_coalesce` | lone copy into the phi register |
+| 18 | (unused here; a later branch uses it) | |
+| 19 | `no_dynoff_skip` | the dynamic-offset add for every buffer (`073da0e`) |
+
+`no_dynoff_skip` was added after the board (the uniform commit had none; a later check found 47 shaders
+differing without it).
+
+**Method.** As in the previous entry: one GPU clock (680 MHz; every run read 680000 before and after), 3D job ms
+from the trace, wall ms per pass as a cross-check, 2,000 passes per run, 5 interleaved repeats (old, new, GLES in turn),
+median with min-max and CV, thermal zone 28.9-29.3 C; GLES is the vendor driver, one pass per job. A change is
+called real only when the min-max ranges do not overlap. Host: `tools/pco-stats` over 88 pipelines (26 `vkbench`,
+8 probe, 54 stages of the application's own shaders, kept outside the repository), compared per shader.
+
+**Host, old against new** (final head, after the review fixes below; the head before them had 100885 groups, -16.4 %).
+Instruction groups 120641 -> 101542 (-15.8 %), 67 of 88 changed, 67 helped, 0 hurt; code size -12.1 %; samples 1411 -> 1403; no spills. Application shaders: 54 stages 119382 -> 100611 (-15.7 %), 0 hurt; `vkbench`
+shaders -28.5 %; probe -11.2 % (both unchanged by the review fixes). Registers: total temps 2377 -> 2373 (9 shaders better, 4 worse by 1-2: the 4-register
+`itrsmp` destination of a 1-channel read, one `+1` from the phi change, one in probe T2). Per flag on the new
+build: `no_imadd_addr` 47 changed (-5189 groups), `no_vreg_coalesce` 22 changed (-3210), before the uniform commits, co-issue alone gave -7909 groups, `itrsmp` alone -186, both -7952 (the two overlap by about
+140 groups). Sanitizer build (debug,
+asserts and NIR validation on, ASan and UBSan): same 88 pipelines, run again on the final head, no ASan error, no leak, no assertion or
+validation failure; the only UBSan message is `applying zero offset to null pointer` (empty `util_dynarray`
+loops), output byte-identical to the release build; with all six flags set the release and the sanitizer outputs equal `41bad10`'s byte for byte.
+
+**GPU, 3D job ms per pass, old (`41bad10`) against new, GLES for reference** (median [min-max]):
+
+| mode | old | new | change | GLES | old/GLES | new/GLES |
+|---|---|---|---|---|---|---|
+| fill | 0.195 [0.194-0.327] | 0.196 [0.195-0.197] | +0.5 % (overlap; one old outlier) | 0.183 | 1.07 | 1.07 |
+| blend | 0.452 [0.451-0.454] | 0.410 [0.407-0.412] | -9.3 % | 0.311 | 1.45 | 1.32 |
+| disc | 0.358 [0.350-0.611] | 0.317 [0.308-0.512] | -11.5 % (overlap; one outlier run each) | 0.310 | 1.15 | 1.02 |
+| tv | 0.265 [0.261-0.273] | 0.256 [0.253-0.435] | -3.4 % (overlap; one new outlier, other 4 runs 0.253-0.258) | 0.289 | 0.92 | 0.89 |
+| alu | 4.940 [4.940-4.940] | 3.333 [3.332-3.333] | -32.5 % | 3.159 | 1.56 | 1.06 |
+| ubo | 24.713 | 24.613 | -0.4 % | 0.952 | 25.96 | 25.85 |
+
+Wall ms per pass agree (fill -6.4 %, blend -8.5 %, disc -11.1 %, tv -2.2 %, alu -32.1 %, ubo -0.4 %). The
+vendor's fragment code for the same shaders has fewer groups still (blend 4 against our 5, `tv` 2 = ours, `alu` 130
+against 136), so group counts alone do not predict the time: `blend` is 1.32x GLES at 5 groups.
+
+Probe wall time (cold, 5 repeats, old -> new; T1 ms per pass, T2 ms per 1000 draws, T3 ms per chain, T4 ms per
+frame): T1 1.494 -> 1.298 (-13.1 %), T2 instanced 9.619 -> 8.291 (-13.8 %), T3 separate 10.745 -> 8.284 (-22.9 %),
+T3 subpass 11.232 -> 9.127 (-18.7 %), T4 63.739 -> 63.717 (no change). T2 with individual draws (CPU-bound
+submission) moved with the phone's CPU state between sessions (old 16.8-23.4, new 20.8-21.0 in the later one; in the
+earlier session 15.7 -> 14.1) and cannot be judged as a before/after without a quiet or pinned CPU; a three-way
+check in one session (old, the head before the uniform commits, new) put the last two equal, so the uniform commits
+add no draw cost.
+
+**Per-render cost.** At 680 MHz a 512x512 fill render costs: kick 0.061 ms CPU in the ioctl and 0.097 ms per
+`vkQueueSubmit` in all; TA job 0.163 ms (GLES 0.039; 0.139 after the smaller dummy object); firmware hand-over
+TA to 3D 0.075 ms in both APIs (not ours to cut); 3D 0.195 ms. The vendor driver batches 20-65 passes into one 3D
+job, we run one job per pass. A chain of small renders is bound by a firmware loop: the next TA starts about
+0.25 ms after the 3D job two renders earlier ends, whatever the CPU does, so one more small render costs about
+0.23-0.25 ms and one more big render about 0.06 ms. The port should therefore avoid many small render passes. Our TA time
+beyond the dummy object (about 0.10 ms at 512x512, growing with the tile count) is not explained; the render target
+dataset parameters are the same as the vendor's.
+
+**dEQP-VK, old driver against new, per test** (`results.csv` diffed, skips file, baseline failures): `glsl.builtin` full
+(2131: 821 Pass, 37 Fail, 1273 Skip on both; the 37 are old-driver failures) 0 changed; `ubo` full (9115) 0;
+`binding_model` 1/50, `renderpass` 1/5 (3173), `draw` 1/10 (3045), `glsl.operator` 1/3 (1210),
+`glsl.texture_functions` full (3672), `api` 1/100, `synchronization` 1/20, `compute` 1/10: 0 changed on the head;
+`fragment_operations` and `glsl.discard` full: 0 changed on the board before the uniform commits (not re-run). Before the fix, `glsl.builtin` 1/5 had 4 Pass -> Fail (`precision.modf.highp.vec4`,
+`modfstruct.mediump.vec2`, `roundeven.mediump.scalar`, `roundeven.mediump.vec4`); the earlier subset held only the
+`common` functions and missed them (the full `builtin` list is run now). A co-issue pair with coefficient
+registers also failed `draw.*.linear_interpolation.offset_*` before `026b8c4`. `vkbench` sums (15 modes, 20 passes)
+identical for old, new and new with the five debug flags of the uniform and co-issue commits set; probe
+PIXELS identical (T1 198639616, T2 282240902, T3 216989696, T4 33423360). HWR counters did not change in any
+session. The 20 GPU recoveries on the board came from one release build that encoded invalid ALU operands (see the
+`9cd563b` entry), not from the shipped code.
+
+**Review fixes after the board** (an independent read of the 19 commits; `CHANGELOG.md`):
+
+- Co-issue: vertex-input and shared registers are no longer phase 1 (S3-S5) sources. The coefficient-bank bug had
+  shown that the upper source group's banks can read wrong data silently, and these two classes had never been
+  read there by a shader checked on the device (the checked `vkbench` and probe pairs use constants only, which
+  stay allowed). Cost: game shaders +657 groups (+0.7 %, 25 shaders, 0 helped), `vkbench` and probe shaders
+  unchanged. Allowing temps only would have cost +1.3 % and undone `blend` 5 -> 7 groups (probe T1 FS 16 -> 21;
+  probe T1 1.49 against 1.30 ms per pass on the phone), so the narrower restriction is used. Probe T1 on the
+  final build 1.300 against 1.298 ms per pass (old).
+- Pipeline cache: a hit is rejected when its stored binding kinds differ from the layout's. On the phone, `vkbench`
+  `ubo` and `blend` with a `VkPipelineCache` saved and reloaded in a new process: 25 of 25 pipelines found, sums
+  unchanged (the rejection path itself was not exercised).
+- The kick's RETRY loop ends after 10 s with `VK_ERROR_DEVICE_LOST` (not triggered on the phone, which never
+  reached it); the dummy-object buffers are freed when the static clear state fails to initialise.
+- A render with no draw keeps the whole render area, although the 32x32 dummy object touches only the origin
+  tile: `vkbench` 512x512, 20 passes, clear and store without a draw: sum 66846720 = every pixel (old and new);
+  `load` with a draw in the first pass only (`BENCH_NODRAW=2`) and 19 load-and-store passes without a draw:
+  133955584, the same as one draw, and `blend` 83886080 (old and new); HWR 3D 1165 / TA 4 / events 1169 before
+  and after.
+- Re-run on the final build: `vkbench` sums of 15 modes identical old (`437ccca`) / new / new with the six flags;
+  probe PIXELS identical (T1 198639616, T2 282240902, T3 216989696, T4 33423360); dEQP per test, old
+  (`437ccca`) against new: `draw` 1/10 (3045, includes 5 `linear_interpolation` cases, 5 Pass 4 Skip), `renderpass`
+  1/5 (3173), `api` 1/100 (2997), `glsl.operator` 1/3 (1210), `glsl.builtin` full (2131: 821 Pass, 37 Fail, 1273 Skip
+  on both): 0 changed in each. HWR unchanged. No dEQP pipeline-cache subset was run; the cache check above is
+  `vkbench`'s.
+
+**Flags against the old compiler.** `PCO_DEBUG=no_coissue,no_fwdfix,no_itrsmp,no_imadd_addr,no_vreg_coalesce,no_dynoff_skip`
+on the new build gives the same compiler output as `41bad10` for the whole corpus (byte for byte).
+
+**Vendor code, in words.** For the same shaders the vendor's fragment code puts `fract` in one `fadd` with both
+source modifiers, reads an interpolated texture coordinate with one fused instruction that carries its own wait,
+and keeps constants in registers; the first two are done now. The vendor's blend shader is one group shorter than
+ours.
+
+**Known limits and open.**
+
+- The `itrsmp` instruction runs with the extended execution condition the vendor's code also sets: lanes the
+  condition masks write a dead temporary, and an `if` that contains a fused read cannot be turned into predicated
+  execution. Not fixed.
+- The `imadd64` buffer address zero-extends the offset: offsets from 2^31 up are used as unsigned, which is what
+  Vulkan buffer offsets are; a negative offset cannot occur.
+- Co-issue allows constants in S3-S5 on the strength of the checked `vkbench` and probe shaders (they read them there
+  with unchanged sums), not of a per-register-number test; vertex-input and shared registers there would need
+  a pair-counter bisect on the device.
+- Validation layers (core, then synchronization) were not run on the probe and `vkbench`: the phone has no
+  loader chaining for them.
+- The plain debug build without sanitizers was not evaluated separately; the sanitizer build is a debug build with
+  asserts on.
+- T2 with individual draws is CPU-bound and session dependent (above).
+- `ubo`: one 512x512 pass costs 24.6 ms on Vulkan, 26x the vendor's GLES twin (same shader and data), with old and new
+  driver alike, so none of the uniform commits is visible in it. This is the largest gap left at the end of the
+  board; it is addressed on a later board.
+- The `itrsmp` result of a 1-channel read keeps four registers; the copies of a vector's components into phi
+  registers are not coalesced (they need the register allocator); the TA time beyond the dummy object is unexplained.
+
+Drafted with an LLM; marker word per AGENTS.md: biblioklept.
