@@ -800,6 +800,16 @@ static bool legalize_pseudo(pco_instr *instr, bool pre_ra)
       legalize_pseudo_post_ra(instr);
 }
 
+/* XCLIPSE: a register vector (a repeat) is large if any of its registers is past the direct range, not only its first.
+ * Measured on the device (lane ubofix, vkbench ubox UBO_PAD=54): a vec4 copied from shared registers 255..258 with one
+ * repeat-4 mbyp gave wrong pixels (sum 37991856 against 93508608 through ld, same on 0b0fe39), every other alignment was
+ * right. A read through the index register (what operands past 255 already use) is exact. */
+static bool hwreg_is_large(pco_ref ref)
+{
+   unsigned last = pco_ref_get_reg_index(ref) + MAX2(pco_ref_get_chans(ref), 1u) - 1;
+   return last > ROGUE_MAX_REG_OFFSET;
+}
+
 static bool try_legalize_large_hwreg_offsets(pco_instr *instr,
                                              const struct pco_op_info *info)
 {
@@ -825,7 +835,7 @@ static bool try_legalize_large_hwreg_offsets(pco_instr *instr,
 
    /* Check dests. */
    pco_foreach_instr_dest_hwreg (pdest, instr) {
-      if (pco_ref_get_reg_index(*pdest) <= ROGUE_MAX_REG_OFFSET)
+      if (!hwreg_is_large(*pdest))
          continue;
 
       large_hwregs[large_hwreg_count++] = pdest;
@@ -838,7 +848,7 @@ static bool try_legalize_large_hwreg_offsets(pco_instr *instr,
 
    /* Check srcs. */
    pco_foreach_instr_src_hwreg (psrc, instr) {
-      if (pco_ref_get_reg_index(*psrc) <= ROGUE_MAX_REG_OFFSET)
+      if (!hwreg_is_large(*psrc))
          continue;
 
       large_hwregs[large_hwreg_count++] = psrc;
