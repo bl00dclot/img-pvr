@@ -350,6 +350,7 @@ int main(int argc, char **argv)
    VkWriteDescriptorSet wds = { .sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, .dstSet = set,
                                 .descriptorCount = 1, .descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
                                 .pImageInfo = &dii };
+   VkBuffer ubo_buf = VK_NULL_HANDLE;
    if (ubo) {
       /* 8 vec4, 8 ivec4 (alternating flags), 16 floats at a 16-byte stride (std140). */
       VkBuffer ub;
@@ -359,6 +360,10 @@ int main(int argc, char **argv)
       int32_t *m = (int32_t *)u + 8 * 4;
       for (unsigned i = 0; i < 8 * 4; i++)
          m[i] = ((i * 7u + 3u) % 5u) != 0;
+      ubo_buf = ub;
+      /* UBO_TAILZERO=<bytes>: zero the buffer from this offset on (the reference of UBO_RANGE). */
+      if (getenv("UBO_TAILZERO"))
+         memset((uint8_t *)u + atoi(getenv("UBO_TAILZERO")), 0, sizeof(float) * 4 * 32 - atoi(getenv("UBO_TAILZERO")));
       VkDescriptorBufferInfo dbi = { ub, 0, VK_WHOLE_SIZE };
       VkWriteDescriptorSet wds2[2] = { wds, { .sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, .dstSet = set,
                                                .dstBinding = 1, .descriptorCount = 1,
@@ -626,6 +631,20 @@ int main(int argc, char **argv)
              f0, f1, (c1 - c0) / iterations);
       printf("submit vk %s %.4f ms/pass (vkQueueSubmit alone, CLOCK_MONOTONIC; the rest of the wall is the wait)\n", mode,
              ((ts.tv_sec - t0.tv_sec) * 1e3 + (ts.tv_nsec - t0.tv_nsec) / 1e6) / iterations);
+   }
+   /* UBO_RANGE=<bytes>: a UBO range smaller than the block (the shader reads past it: robustBufferAccess is off, so
+    * that is undefined in Vulkan; this driver promotes the reads to shared registers and defines the tail as zero,
+    * which UBO_TAILZERO=<same bytes> on a full-range run must reproduce). A full-range pass first leaves the
+    * shared registers holding the buffer's tail, then the descriptor is rewritten with the short range. */
+   if (ubo_buf && getenv("UBO_RANGE")) {
+      begin();
+      RECORD_PASS();
+      submit_wait();
+      VkDescriptorBufferInfo sdbi = { ubo_buf, 0, (VkDeviceSize)atoi(getenv("UBO_RANGE")) };
+      VkWriteDescriptorSet sw = { .sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, .dstSet = set, .dstBinding = 1,
+                                  .descriptorCount = 1, .descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,
+                                  .pBufferInfo = &sdbi };
+      vkUpdateDescriptorSets(dev, 1, &sw, 0, NULL);
    }
    pass_no = 0;
    for (int it = wall ? iterations - 1 : 0; it < iterations; it++) {

@@ -1555,6 +1555,13 @@ void pvr_pds_generate_descriptor_upload_program(
       num_consts32++;
       num_consts64++;
       total_dma_count++;
+
+      /* XCLIPSE: a UBO range has a second DMA, the zero fill of what the bound buffer does not cover. */
+      if (input_program->buffers[index].type == PVR_BUFFER_TYPE_UBO) {
+         num_consts32++;
+         num_consts64++;
+         total_dma_count++;
+      }
    }
 
    /* DOUTU for the secondary update program requires a 64-bit constant. */
@@ -1607,14 +1614,35 @@ void pvr_pds_generate_descriptor_upload_program(
 
       if (buffer->type == PVR_BUFFER_TYPE_UBO) {
          struct pvr_const_map_entry_ubo_range *ubo_entry;
+         unsigned zero_const32 = next_const32;
+         unsigned zero_const64 = next_const64;
+         bool last_dma2;
+         bool halt2;
 
-         /* The burst writes the control word with the full size; the entry after it lets the driver patch the
-          * address and clamp the size at draw time. */
+         /* Two DMAs into disjoint registers, so their completion order does not matter: first the zero fill of the
+          * tail the bound buffer does not cover (size 0 when it covers everything), then the buffer's own dwords
+          * (never size 0: it is the last DMA of the program when the range is the last buffer). The burst writes
+          * the control words with the full size; the entry after them lets the driver patch the addresses, sizes
+          * and destination offsets at draw time. */
          PVR_PDS_MODE_TOGGLE(code_section,
                              instruction,
                              pvr_encode_burst_cs(&entry_write_state,
-                                                 last_dma,
-                                                 halt,
+                                                 false,
+                                                 false,
+                                                 zero_const32,
+                                                 zero_const64,
+                                                 buffer->size_in_dwords,
+                                                 buffer->destination));
+         next_const64++;
+         next_const32++;
+
+         last_dma2 = (++running_dma_count == total_dma_count);
+         halt2 = last_dma2 && !input_program->secondary_program_present;
+         PVR_PDS_MODE_TOGGLE(code_section,
+                             instruction,
+                             pvr_encode_burst_cs(&entry_write_state,
+                                                 last_dma2,
+                                                 halt2,
                                                  next_const32,
                                                  next_const64,
                                                  buffer->size_in_dwords,
@@ -1624,6 +1652,8 @@ void pvr_pds_generate_descriptor_upload_program(
          ubo_entry->type = PVR_PDS_CONST_MAP_ENTRY_TYPE_UBO_RANGE;
          ubo_entry->const_offset = next_const64 * 2;
          ubo_entry->const32_offset = next_const32;
+         ubo_entry->zero_const_offset = zero_const64 * 2;
+         ubo_entry->zero_const32_offset = zero_const32;
          ubo_entry->range_index = buffer->buffer_id;
 
          next_const64++;
