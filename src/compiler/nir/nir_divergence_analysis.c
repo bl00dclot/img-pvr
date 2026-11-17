@@ -1144,6 +1144,46 @@ visit_intrinsic(nir_intrinsic_instr *instr, struct divergence_state *state)
    case nir_intrinsic_load_global_transpose_amd:
    case nir_intrinsic_load_deref_transpose_amd:
    case nir_intrinsic_load_global_tr_amd:
+   /* XCLIPSE: PCO intrinsics, conservatively divergent (pco_trans_nir.c
+    * runs the analysis for uniform-if branching; debug builds asserted). */
+   case nir_intrinsic_alphatst_pco:
+   case nir_intrinsic_dma_flush_pco:
+   case nir_intrinsic_dma_ld_pco:
+   case nir_intrinsic_dma_ld_shregs_pco:
+   case nir_intrinsic_dma_st_pco:
+   case nir_intrinsic_dma_st_shregs_pco:
+   case nir_intrinsic_dma_st_tiled_pco:
+   case nir_intrinsic_dummy_load_store_pco:
+   case nir_intrinsic_emitpix_pco:
+   case nir_intrinsic_flush_tile_buffer_pco:
+   case nir_intrinsic_frag_store_pco:
+   case nir_intrinsic_global_atomic_swap_pco:
+   case nir_intrinsic_isp_feedback_pco:
+   case nir_intrinsic_load_cluster_num_pco:
+   case nir_intrinsic_load_coeff_pco:
+   case nir_intrinsic_load_fs_coeffs_pco:
+   case nir_intrinsic_load_instance_num_pco:
+   case nir_intrinsic_load_packed_sample_location_pco:
+   case nir_intrinsic_load_savmsk_vm_pco:
+   case nir_intrinsic_load_shared_reg_alloc_size_pco:
+   case nir_intrinsic_load_slot_num_pco:
+   case nir_intrinsic_load_smp_meta_pco:
+   case nir_intrinsic_load_smp_state_pco:
+   case nir_intrinsic_load_tex_meta_pco:
+   case nir_intrinsic_load_tex_state_pco:
+   case nir_intrinsic_load_tile_coord_pco:
+   case nir_intrinsic_load_tiled_offset_pco:
+   case nir_intrinsic_load_vtxin_pco:
+   case nir_intrinsic_mutex_pco:
+   case nir_intrinsic_pack_pco:
+   case nir_intrinsic_pck_prog_pco:
+   case nir_intrinsic_smp_coeffs_pco:
+   case nir_intrinsic_smp_pco:
+   case nir_intrinsic_smp_raw_pco:
+   case nir_intrinsic_smp_write_pco:
+   case nir_intrinsic_unpack_pco:
+   case nir_intrinsic_uvsw_write_pco:
+   case nir_intrinsic_wop_pco:
       is_divergent = true;
       break;
 
