@@ -4733,6 +4733,25 @@ static void trans_if(trans_ctx *tctx,
    pif->cond = pco_ref_nir_src_t(&nif->condition, tctx);
    assert(pco_ref_is_scalar(pif->cond));
 
+   /* XCLIPSE: `if (x != 0)` on a 32-bit integer tests x itself: pco_cf's prologue is tstz.u32 (p0 = cond == 0), which
+    * for a 0 / non-0 x is the same predicate as for the boolean ine(x, 0) (0 or ~0). Skips the boolean: tst.s32.ne +
+    * movc (a group) and, for a flag in a shared register, the copy into a temp in front of it (pco_opt forwards the
+    * register read into tstz src0 = S0, which takes shared registers). The ine stays for other users, else dce
+    * removes it. */
+   if (!PCO_DEBUG(NO_SHAREDSRC) && nir_def_is_alu(nif->condition.ssa)) {
+      nir_alu_instr *cmp = nir_def_as_alu(nif->condition.ssa);
+      if (cmp->op == nir_op_ine && cmp->def.num_components == 1) {
+         for (unsigned i = 0; i < 2; ++i) {
+            const nir_alu_src *x = &cmp->src[i];
+            if (nir_src_bit_size(x->src) == 32 && nir_src_num_components(x->src) == 1 && !x->swizzle[0] &&
+                nir_src_is_const(cmp->src[!i].src) && nir_src_as_uint(cmp->src[!i].src) == 0) {
+               pif->cond = pco_ref_nir_src_t(&x->src, tctx);
+               break;
+            }
+         }
+      }
+   }
+
    bool has_then = !nir_cf_list_is_empty_block(&nif->then_list);
    bool has_else = !nir_cf_list_is_empty_block(&nif->else_list);
    assert(has_then || has_else);
