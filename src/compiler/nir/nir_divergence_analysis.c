@@ -1161,6 +1161,9 @@ visit_intrinsic(nir_intrinsic_instr *instr, struct divergence_state *state)
    case nir_intrinsic_isp_feedback_pco:
    case nir_intrinsic_load_cluster_num_pco:
    case nir_intrinsic_load_coeff_pco:
+   case nir_intrinsic_load_face_ccw_pco:
+   case nir_intrinsic_load_front_face_op_pco:
+   case nir_intrinsic_load_fs_meta_pco:
    case nir_intrinsic_load_fs_coeffs_pco:
    case nir_intrinsic_load_instance_num_pco:
    case nir_intrinsic_load_packed_sample_location_pco:
