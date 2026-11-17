@@ -210,14 +210,15 @@ typedef struct _pco_push_const_data {
  * offsets; the driver allocates shared registers for them and the descriptor PDS program DMAs
  * them there when the draw executes (the same way as inline uniform blocks and push constants).
  * Budget: at most PCO_UBO_PUSH_MAX_RANGES ranges (one DMA each) and PCO_UBO_PUSH_BUDGET dwords
- * per stage. 64 dwords is twice what the game's UBO reads (31); tiles in flight stay at 7 up to
- * about 570 shared dwords on a GE8320 (lanes/ubopush.md). */
+ * per stage. 128 dwords (board 4, user decision after lane ubopush: `ubo` 6.47 -> 4.02 ms and corpus
+ * instruction groups -3.4 % -> -3.6 % against 64; the game's UBO reads 31 to 34); tiles in flight stay at 7 up
+ * to about 570 shared dwords on a GE8320 (lanes/ubopush.md). */
 #define PCO_UBO_PUSH_MAX_RANGES 8
+#define PCO_UBO_PUSH_BUDGET 128
 
 /* Hard limits, whatever the budget: reads at byte offsets of 1024 or more are never promoted, and the ranges of a stage
  * never total more than this (the PDS DMA size field is 12 bits, the destination offset 13). */
 #define PCO_UBO_PUSH_MAX_DW 256
-#define PCO_UBO_PUSH_BUDGET 64
 
 typedef struct _pco_ubo_range {
    unsigned desc_set;

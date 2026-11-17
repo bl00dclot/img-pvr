@@ -196,7 +196,7 @@ void pco_nir_analyze_ubo_ranges(nir_shader *nir, pco_data *data)
       cands[j] = c;
    }
 
-   /* PCO_UBO_PUSH_BUDGET=<dwords> overrides the budget (the board-4 measurement at 32/64/128; the driver default is 64).
+   /* PCO_UBO_PUSH_BUDGET=<dwords> overrides the budget (the board-4 measurement at 32/64/128; the default is PCO_UBO_PUSH_BUDGET = 128).
     * A negative value is not a budget (it would wrap to a huge unsigned one): the default applies. */
    long env_budget = debug_get_num_option("PCO_UBO_PUSH_BUDGET", PCO_UBO_PUSH_BUDGET);
    unsigned budget = env_budget < 0 ? PCO_UBO_PUSH_BUDGET : MIN2((unsigned long)env_budget, MAX_WINDOW_DW);
