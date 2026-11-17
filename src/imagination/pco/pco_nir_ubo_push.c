@@ -32,7 +32,7 @@
 #include <string.h>
 
 /* Constant-offset reads further into a block than this are not considered. */
-#define MAX_WINDOW_DW 256
+#define MAX_WINDOW_DW PCO_UBO_PUSH_MAX_DW
 
 /* Holes of up to this many unread dwords are bridged: a range costs one DMA, a hole a register. */
 #define MAX_GAP_DW 3
@@ -235,6 +235,7 @@ void pco_nir_analyze_ubo_ranges(nir_shader *nir, pco_data *data)
          .offset = c.offset,
          .count = c.count,
          .start = ~0u, /* the driver allocates the shared registers */
+         .uses = c.uses,
       };
    }
 

@@ -213,6 +213,10 @@ typedef struct _pco_push_const_data {
  * per stage. 64 dwords is twice what the game's UBO reads (31); tiles in flight stay at 7 up to
  * about 570 shared dwords on a GE8320 (lanes/ubopush.md). */
 #define PCO_UBO_PUSH_MAX_RANGES 8
+
+/* Hard limits, whatever the budget: reads at byte offsets of 1024 or more are never promoted, and the ranges of a stage
+ * never total more than this (the PDS DMA size field is 12 bits, the destination offset 13). */
+#define PCO_UBO_PUSH_MAX_DW 256
 #define PCO_UBO_PUSH_BUDGET 64
 
 typedef struct _pco_ubo_range {
@@ -222,6 +226,7 @@ typedef struct _pco_ubo_range {
    unsigned offset; /** Dword offset into the buffer. */
    unsigned count; /** Dwords. */
    unsigned start; /** First shared register, set by the driver. */
+   unsigned uses; /** Reads of the range's dwords in the shader (the driver drops the least dense range first). */
 } pco_ubo_range;
 
 /** PCO common data. */
@@ -290,6 +295,50 @@ static inline const pco_ubo_range *pco_find_ubo_range(const pco_common_data *com
    }
 
    return NULL;
+}
+
+/**
+ * XCLIPSE: gives the promoted ranges their shared registers after everything else a stage allocated, and drops ranges
+ * (least reads per dword first) until the stage's shared registers fit in `limit`. A dropped range's reads stay `ld`:
+ * the translation (pco_trans_nir.c) runs after this and only sees the ranges that are left. Needs common->shareds to be
+ * the allocation without the ranges. A stage without a range is left untouched.
+ *
+ * \param[in,out] common Common data; ubo_ranges, ubo_range_count and shareds change.
+ * \param[in] limit Most shared registers the stage may use.
+ */
+static inline void pco_fit_ubo_ranges(pco_common_data *common, unsigned limit)
+{
+   for (;;) {
+      unsigned start = common->ubo_range_count ? (common->shareds + 3) & ~3u : common->shareds;
+      unsigned total = start;
+      for (unsigned u = 0; u < common->ubo_range_count; ++u)
+         total += common->ubo_ranges[u].count;
+
+      if (total <= limit || !common->ubo_range_count) {
+         if (common->ubo_range_count) {
+            common->shareds = start;
+            for (unsigned u = 0; u < common->ubo_range_count; ++u) {
+               common->ubo_ranges[u].start = common->shareds;
+               common->shareds += common->ubo_ranges[u].count;
+            }
+         }
+
+         return;
+      }
+
+      /* Lowest uses / count; on a tie the larger one (frees more). */
+      unsigned worst = 0;
+      for (unsigned u = 1; u < common->ubo_range_count; ++u) {
+         const pco_ubo_range *a = &common->ubo_ranges[u], *w = &common->ubo_ranges[worst];
+         const unsigned long long ad = (unsigned long long)a->uses * w->count, wd = (unsigned long long)w->uses * a->count;
+         if (ad < wd || (ad == wd && a->count > w->count))
+            worst = u;
+      }
+
+      for (unsigned u = worst; u + 1 < common->ubo_range_count; ++u)
+         common->ubo_ranges[u] = common->ubo_ranges[u + 1];
+      --common->ubo_range_count;
+   }
 }
 
 /** PCO shader data. */

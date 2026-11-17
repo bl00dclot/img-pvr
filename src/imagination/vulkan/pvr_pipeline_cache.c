@@ -310,6 +310,7 @@ static void io_common(struct pvr_cache_io *io, pco_common_data *c)
       IO_INT(r->offset, ~0u);
       IO_INT(r->count, PVR_CACHED_MAX_REG);
       IO_INT(r->start, ~0u);
+      IO_INT(r->uses, ~0u);
    }
 
    IO_RANGE(c->point_sampler);
@@ -561,9 +562,9 @@ static bool io_xfb(struct pvr_cache_io *io, void *mem_ctx, nir_xfb_info **xfb)
  * until the walkers are looked at.
  */
 #if UINTPTR_MAX == 0xffffffffu
-static_assert(sizeof(pco_data) == 3296, "pco_data changed: update io_*()");
+static_assert(sizeof(pco_data) == 3328, "pco_data changed: update io_*()");
 #else
-static_assert(sizeof(pco_data) == 3352, "pco_data changed: update io_*()");
+static_assert(sizeof(pco_data) == 3384, "pco_data changed: update io_*()");
 #endif
 static_assert(sizeof(nir_xfb_info) == 24, "nir_xfb_info changed: update io_xfb()");
 

@@ -959,7 +959,8 @@ static void pvr_postprocess_shader_data(pco_data *data,
                                         nir_shader *nir,
                                         const void *pCreateInfo,
                                         struct vk_pipeline_layout *layout,
-                                        struct usc_mrt_setup *setup);
+                                        struct usc_mrt_setup *setup,
+                                        const struct pvr_device_runtime_info *dev_runtime_info);
 
 struct lower_ycbcr_state {
    uint32_t set_layout_count;
@@ -1194,7 +1195,12 @@ pvr_compute_shaders_compile(struct pvr_device *const device,
             &ycbcr_state);
    pco_lower_nir(pco_ctx, nir, &shader_data);
    pco_postprocess_nir(pco_ctx, nir, &shader_data);
-   pvr_postprocess_shader_data(&shader_data, nir, pCreateInfo, layout, NULL);
+   pvr_postprocess_shader_data(&shader_data,
+                               nir,
+                               pCreateInfo,
+                               layout,
+                               NULL,
+                               &device->pdevice->dev_runtime_info);
 
    cs = pco_trans_nir(pco_ctx, nir, &shader_data, shader_mem_ctx);
    if (!cs) {
@@ -2833,7 +2839,8 @@ static void pvr_init_descriptors(pco_data *data,
 
 static void pvr_setup_descriptors(pco_data *data,
                                   nir_shader *nir,
-                                  struct vk_pipeline_layout *layout)
+                                  struct vk_pipeline_layout *layout,
+                                  const struct pvr_device_runtime_info *dev_runtime_info)
 {
    mesa_shader_stage stage = nir->info.stage;
 
@@ -2999,16 +3006,32 @@ static void pvr_setup_descriptors(pco_data *data,
    }
 
    /* XCLIPSE: shared registers for the UBO ranges the compiler promoted (pco_nir_ubo_push.c), after everything
-    * above so that no other allocation moves. The descriptor PDS program DMAs each range here. */
-   if (data->common.ubo_range_count)
-      data->common.shareds = ALIGN_POT(data->common.shareds, 4);
+    * above so that no other allocation moves. The descriptor PDS program DMAs each range here. The compiler picked the
+    * ranges before any of the allocations above were known, so they are fitted into what the stage may have: ranges
+    * that would take it past the hardware's limit are dropped (least reads per dword first) and their reads stay `ld`;
+    * the translation runs after this and sees only the ranges that are left. The limits are the ones the rest of the
+    * driver already works to: the pixel and vertex shared maxima, for compute the local memory the device gives a
+    * kernel (pvr_compute_generate_control_stream asserts coeffs + shareds <= it). */
+   unsigned max_shareds;
+   switch (stage) {
+   case MESA_SHADER_VERTEX:
+      max_shareds = ROGUE_MAX_VERTEX_SHARED_REGISTERS;
+      break;
 
-   for (unsigned u = 0; u < data->common.ubo_range_count; ++u) {
-      pco_ubo_range *range = &data->common.ubo_ranges[u];
+   case MESA_SHADER_FRAGMENT:
+      max_shareds = ROGUE_MAX_PIXEL_SHARED_REGISTERS;
+      break;
 
-      range->start = data->common.shareds;
-      data->common.shareds += range->count;
+   default:
+      max_shareds = ROGUE_MAX_COMPUTE_SHARED_REGISTERS;
+      if (dev_runtime_info->cdm_max_local_mem_size_regs <= data->common.coeffs)
+         max_shareds = 0;
+      else
+         max_shareds = MIN2(max_shareds, dev_runtime_info->cdm_max_local_mem_size_regs - data->common.coeffs);
+      break;
    }
+
+   pco_fit_ubo_ranges(&data->common, max_shareds);
 }
 
 static void
@@ -3118,7 +3141,8 @@ static void pvr_postprocess_shader_data(pco_data *data,
                                         nir_shader *nir,
                                         const void *pCreateInfo,
                                         struct vk_pipeline_layout *layout,
-                                        struct usc_mrt_setup *mrt_setup)
+                                        struct usc_mrt_setup *mrt_setup,
+                                        const struct pvr_device_runtime_info *dev_runtime_info)
 {
    const VkGraphicsPipelineCreateInfo *pGraphicsCreateInfo = pCreateInfo;
 
@@ -3168,7 +3192,7 @@ static void pvr_postprocess_shader_data(pco_data *data,
       UNREACHABLE("");
    }
 
-   pvr_setup_descriptors(data, nir, layout);
+   pvr_setup_descriptors(data, nir, layout, dev_runtime_info);
 
    /* TODO: common things, like large constants being put into shareds. */
 }
@@ -3805,7 +3829,8 @@ pvr_graphics_shaders_compile(struct pvr_device *const device,
                                   nir_shaders[stage],
                                   pCreateInfo,
                                   layout,
-                                  &mrt_setup);
+                                  &mrt_setup,
+                                  &device->pdevice->dev_runtime_info);
    }
 
    if (mrt_setup_owned) {
