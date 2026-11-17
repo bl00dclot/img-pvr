@@ -6631,13 +6631,24 @@ static VkResult pvr_setup_descriptor_mappings(
          const struct pvr_const_map_entry_ubo_range *ubo_entry = (struct pvr_const_map_entry_ubo_range *)entries;
          assert(ubo_entry->range_index < data->common.ubo_range_count);
          const pco_ubo_range *range = &data->common.ubo_ranges[ubo_entry->range_index];
-         const struct pvr_descriptor_set *descriptor_set = desc_state->sets[range->desc_set];
-         assert(descriptor_set);
 
-         const struct pvr_descriptor_set_layout_binding *binding = &descriptor_set->layout->bindings[range->binding];
-         struct pvr_buffer_descriptor buffer_desc;
-         uint64_t buffer_size;
-         if (binding->dynamic_buffer_idx != ~0U) {
+         /* The range was validated against the pipeline layout (pvr_cached_ubo_ranges_match for cached shaders), the set
+          * bound here only has to be compatible with it, which an application can get wrong: these are release checks,
+          * not asserts. Anything that does not resolve to a uniform buffer descriptor reads as a null descriptor. */
+         const struct pvr_descriptor_set *descriptor_set =
+            range->desc_set < PVR_MAX_DESCRIPTOR_SETS ? desc_state->sets[range->desc_set] : NULL;
+         const struct pvr_descriptor_set_layout_binding *binding =
+            descriptor_set && range->binding < descriptor_set->layout->binding_count
+               ? &descriptor_set->layout->bindings[range->binding]
+               : NULL;
+         if (binding && (range->elem >= binding->descriptor_count ||
+                         (binding->type != VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER &&
+                          binding->type != VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER_DYNAMIC)))
+            binding = NULL;
+
+         struct pvr_buffer_descriptor buffer_desc = { 0 };
+         uint64_t buffer_size = 0;
+         if (binding && binding->dynamic_buffer_idx != ~0U) {
             const unsigned dyn_idx = binding->dynamic_buffer_idx + range->elem;
             buffer_desc = descriptor_set->dynamic_buffers[dyn_idx];
 
@@ -6649,9 +6660,9 @@ static VkResult pvr_setup_descriptor_mappings(
             buffer_size = !whole                          ? buffer_desc.size
                           : buffer_desc.size > buffer_desc.offset ? buffer_desc.size - buffer_desc.offset
                                                                   : 0;
-         } else {
+         } else if (binding) {
             memcpy(&buffer_desc,
-                   (const uint8_t *)descriptor_set->mapping + binding->offset + range->elem * binding->stride,
+                   (const uint8_t *)descriptor_set->mapping + binding->offset + (size_t)range->elem * binding->stride,
                    sizeof(buffer_desc));
             buffer_size = buffer_desc.size;
          }

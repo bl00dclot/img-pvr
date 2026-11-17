@@ -183,6 +183,8 @@ fail:
 
 /* Sanity bound on a descriptor set's binding count when reading cache data. */
 #define PVR_CACHED_MAX_BINDINGS 4096u
+/* XCLIPSE: the destination offset of a PDS DMA into the common store is 13 bits. */
+#define PVR_CACHED_MAX_SHARED_AO 8192u
 
 static_assert(sizeof(unsigned) == sizeof(uint32_t), "unsigned is 32 bits");
 static_assert(PVR_MAX_DESCRIPTOR_SETS <= 8, "binding presence mask is 8 bits");
@@ -890,12 +892,63 @@ static bool pvr_cached_push_consts_match(const pco_data *d,
           count <= PVR_MAX_PUSH_CONSTANTS_SIZE / sizeof(uint32_t);
 }
 
+/* XCLIPSE: promoted UBO ranges (pco_nir_ubo_push.c). io_common only bounds each field on its own; the draw code
+ * (pvr_setup_descriptor_mappings) uses them as an index into the bound set's bindings[], as an offset into its
+ * mapping, as a DMA size (12 bits) and as a destination in the common store (13 bits), so a range has to be one
+ * the compiler could have made for this layout: a uniform buffer binding that exists, an element it has, dwords
+ * inside the pass's window and budget, registers inside the stage's shared allocation.
+ */
+static bool pvr_cached_ubo_ranges_match(const pco_data *d,
+                                        int stage, /* mesa_shader_stage or -1 */
+                                        const struct vk_pipeline_layout *layout)
+{
+   const pco_common_data *c = &d->common;
+   unsigned total = 0;
+
+   if (!c->ubo_range_count)
+      return true;
+
+   if (stage < 0 || c->ubo_range_count > PCO_UBO_PUSH_MAX_RANGES || c->shareds > PVR_CACHED_MAX_SHARED_AO)
+      return false;
+
+   for (unsigned u = 0; u < c->ubo_range_count; u++) {
+      const pco_ubo_range *r = &c->ubo_ranges[u];
+
+      if (r->desc_set >= layout->set_count || !layout->set_layouts[r->desc_set])
+         return false;
+
+      const struct pvr_descriptor_set_layout *sl = vk_to_pvr_descriptor_set_layout(layout->set_layouts[r->desc_set]);
+      if (!(sl->stage_flags & BITFIELD_BIT(stage)) || r->binding >= sl->binding_count)
+         return false;
+
+      const struct pvr_descriptor_set_layout_binding *b = &sl->bindings[r->binding];
+      if (b->type != VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER && b->type != VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER_DYNAMIC)
+         return false;
+
+      if (r->elem >= b->descriptor_count)
+         return false;
+
+      if (!r->count || r->offset >= PCO_UBO_PUSH_MAX_DW || r->count > PCO_UBO_PUSH_MAX_DW - r->offset)
+         return false;
+
+      total += r->count;
+      if (total > PCO_UBO_PUSH_MAX_DW)
+         return false;
+
+      if (r->start >= c->shareds || r->count > c->shareds - r->start)
+         return false;
+   }
+
+   return true;
+}
+
 static bool pvr_cached_stage_matches(const struct pvr_cached_stage *stage,
                                      int mesa_stage,
                                      const struct vk_pipeline_layout *layout)
 {
    return pvr_cached_desc_sets_match(&stage->data, mesa_stage, layout) &&
-          pvr_cached_push_consts_match(&stage->data, mesa_stage, layout);
+          pvr_cached_push_consts_match(&stage->data, mesa_stage, layout) &&
+          pvr_cached_ubo_ranges_match(&stage->data, mesa_stage, layout);
 }
 
 /* Tile buffer addresses are looked up by count / stride at draw time. */
