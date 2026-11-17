@@ -79,6 +79,8 @@ enum pco_debug {
    PCO_DEBUG_NO_SCHEDWDF = BITFIELD64_BIT(15),
    PCO_DEBUG_NO_IMADD_ADDR = BITFIELD64_BIT(16),
    PCO_DEBUG_NO_VREG_COALESCE = BITFIELD64_BIT(17),
+   /* Bit 18 is left unused here: a later branch uses it for no_ubo_push. */
+   PCO_DEBUG_NO_DYNOFF_SKIP = BITFIELD64_BIT(19),
 };
 
 extern uint64_t pco_debug;

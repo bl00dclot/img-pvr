@@ -51,6 +51,7 @@ static const struct debug_named_value pco_debug_options[] = {
    { "no_schedwdf", PCO_DEBUG_NO_SCHEDWDF, "XCLIPSE: itrsmp followed by a wdf group instead of its own sched = wdf." },
    { "no_imadd_addr", PCO_DEBUG_NO_IMADD_ADDR, "XCLIPSE: buffer read address as add64_32 (not one imadd64)." },
    { "no_vreg_coalesce", PCO_DEBUG_NO_VREG_COALESCE, "XCLIPSE: keep the copy into a phi register after its producer." },
+   { "no_dynoff_skip", PCO_DEBUG_NO_DYNOFF_SKIP, "XCLIPSE: add the dynamic offset to every buffer read address, also for buffers that are not dynamic (A/B)." },
    DEBUG_NAMED_VALUE_END,
 };
 

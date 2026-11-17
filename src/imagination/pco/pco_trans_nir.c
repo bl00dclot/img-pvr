@@ -1552,7 +1552,8 @@ static pco_instr *trans_load_buffer(trans_ctx *tctx,
     * dword is zero, and its add64_32 is a group and two registers per read (game corpus, lean fs: 23 reads). */
    unsigned desc_set, binding;
    pco_unpack_desc(packed_desc, &desc_set, &binding);
-   bool needs_dyn_off = common->desc_sets[desc_set].bindings[binding].is_dynamic_buffer;
+   bool needs_dyn_off = common->desc_sets[desc_set].bindings[binding].is_dynamic_buffer ||
+                        PCO_DEBUG(NO_DYNOFF_SKIP);
 
    pco_ref addr_comps_dyn_off[2];
    if (!needs_dyn_off) {
