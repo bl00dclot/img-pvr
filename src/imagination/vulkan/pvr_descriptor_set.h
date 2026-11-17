@@ -82,6 +82,12 @@ struct pvr_descriptor_set {
    pvr_dev_addr_t dev_addr; /** Descriptor set device address. */
    void *mapping; /** Descriptor set CPU mapping. */
 
+   /* XCLIPSE: bit i is set if dynamic descriptor i was written with VK_WHOLE_SIZE. Its size is then buffer size minus the
+    * descriptor offset, and the valid window starts at the dynamic offset as well, so the bytes the descriptor covers
+    * are size minus the dynamic offset (pvr_setup_descriptor_mappings, UBO ranges). An explicit range is not reduced.
+    * Descriptors from index 64 on are treated as WHOLE_SIZE (never reads past the buffer; the device limit is 12). */
+   uint64_t dynamic_whole_size;
+
    struct pvr_buffer_descriptor dynamic_buffers[];
 };
 

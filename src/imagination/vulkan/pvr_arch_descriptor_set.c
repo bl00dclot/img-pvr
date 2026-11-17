@@ -60,6 +60,9 @@ write_dynamic_buffer(struct pvr_descriptor_set *set,
    struct pvr_buffer_descriptor *desc_mapping =
       &set->dynamic_buffers[desc_offset];
 
+   const uint64_t whole_bit = desc_offset < 64 ? BITFIELD64_BIT(desc_offset) : 0;
+   set->dynamic_whole_size &= ~whole_bit;
+
    if (buffer_info->buffer == VK_NULL_HANDLE) {
       memset(desc_mapping, 0, sizeof(*desc_mapping));
       return;
@@ -75,6 +78,9 @@ write_dynamic_buffer(struct pvr_descriptor_set *set,
 
    desc_mapping->addr = buffer_addr.addr;
    desc_mapping->size = range;
+
+   if (buffer_info->range == VK_WHOLE_SIZE)
+      set->dynamic_whole_size |= whole_bit;
 }
 
 static void
@@ -430,6 +436,17 @@ void PVR_PER_ARCH(UpdateDescriptorSets)(
          memcpy(&dst_set->dynamic_buffers[dst_desc_offset],
                 &src_set->dynamic_buffers[src_desc_offset],
                 sizeof(*src_set->dynamic_buffers) * copy->descriptorCount);
+
+         /* XCLIPSE: the WHOLE_SIZE bits travel with the descriptors. */
+         for (uint32_t j = 0; j < copy->descriptorCount; j++) {
+            if (dst_desc_offset + j >= 64 || src_desc_offset + j >= 64)
+               break;
+
+            const uint64_t bit = BITFIELD64_BIT(dst_desc_offset + j);
+            dst_set->dynamic_whole_size =
+               (dst_set->dynamic_whole_size & ~bit) |
+               (((src_set->dynamic_whole_size >> (src_desc_offset + j)) & 1) ? bit : 0);
+         }
 
          continue;
       }

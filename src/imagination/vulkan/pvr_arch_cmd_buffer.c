@@ -6636,21 +6636,33 @@ static VkResult pvr_setup_descriptor_mappings(
 
          const struct pvr_descriptor_set_layout_binding *binding = &descriptor_set->layout->bindings[range->binding];
          struct pvr_buffer_descriptor buffer_desc;
+         uint64_t buffer_size;
          if (binding->dynamic_buffer_idx != ~0U) {
-            buffer_desc = descriptor_set->dynamic_buffers[binding->dynamic_buffer_idx + range->elem];
+            const unsigned dyn_idx = binding->dynamic_buffer_idx + range->elem;
+            buffer_desc = descriptor_set->dynamic_buffers[dyn_idx];
+
+            /* A dynamic descriptor's size is relative to its own address, the dynamic offset (buffer_desc.offset)
+             * moves the window. With VK_WHOLE_SIZE the window runs to the end of the buffer, so the bytes it covers
+             * are the size minus the dynamic offset (an explicit range is the size itself): without this the DMA
+             * read dynamic-offset bytes past the end of the buffer. */
+            const bool whole = dyn_idx >= 64 || ((descriptor_set->dynamic_whole_size >> dyn_idx) & 1);
+            buffer_size = !whole                          ? buffer_desc.size
+                          : buffer_desc.size > buffer_desc.offset ? buffer_desc.size - buffer_desc.offset
+                                                                  : 0;
          } else {
             memcpy(&buffer_desc,
                    (const uint8_t *)descriptor_set->mapping + binding->offset + range->elem * binding->stride,
                    sizeof(buffer_desc));
+            buffer_size = buffer_desc.size;
          }
 
          const uint64_t zero_addr = device->null_state.zero_bo->vma->dev_addr.addr;
          const uint64_t range_bytes = (uint64_t)range->offset * sizeof(uint32_t);
          uint64_t data_addr = zero_addr;
          uint32_t covered = 0; /* dwords of the range inside the bound buffer */
-         if (buffer_desc.addr && buffer_desc.size > range_bytes) {
+         if (buffer_desc.addr && buffer_size > range_bytes) {
             data_addr = buffer_desc.addr + buffer_desc.offset + range_bytes;
-            covered = MIN2(range->count, (buffer_desc.size - range_bytes) / sizeof(uint32_t));
+            covered = MIN2(range->count, (buffer_size - range_bytes) / sizeof(uint32_t));
          }
 
          /* No buffer dwords at all: the data DMA reads zeros too (it is never size 0). */
