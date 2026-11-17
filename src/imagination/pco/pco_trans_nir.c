@@ -1499,6 +1499,20 @@ static pco_instr *trans_load_buffer(trans_ctx *tctx,
       if (range) {
          assert(range->start != ~0u && !(nir_src_as_uint(intr->src[1]) % 4));
          unsigned skip = offset_dw - range->offset;
+
+         /* A repeat is at most 4 (the vectoriser makes UBO loads of 5 and 8 dwords): copy the dwords one by one,
+          * the vec gives the register allocator the destination to coalesce into. */
+         if (chans > 4) {
+            pco_ref comps[8];
+            assert(chans <= ARRAY_SIZE(comps));
+            for (unsigned c = 0; c < chans; ++c) {
+               comps[c] = pco_ref_new_ssa32(tctx->func);
+               pco_mbyp(&tctx->b, comps[c], pco_ref_hwreg(range->start + skip + c, PCO_REG_CLASS_SHARED));
+            }
+
+            return pco_vec(&tctx->b, dest, chans, comps);
+         }
+
          return trans_load_common_store(tctx,
                                         intr,
                                         dest,
