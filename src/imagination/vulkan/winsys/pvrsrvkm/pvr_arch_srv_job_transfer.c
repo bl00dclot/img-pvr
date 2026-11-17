@@ -25,6 +25,7 @@
 
 #include "util/os_file.h"
 
+#include "util/os_time.h"
 #include "vk_log.h"
 #include "vk_util.h"
 
@@ -231,6 +232,10 @@ VkResult PVR_PER_ARCH(srv_winsys_transfer_submit)(
 
    job_num = submit_info->job_num;
 
+   /* XCLIPSE: same bound as the render kick: the queue drains at the GPU's pace, so 10 s of RETRY
+    * answers means a hung GPU or firmware; report device loss instead of spinning for ever. */
+   const int64_t retry_deadline = os_time_get_nano() + 10000000000ll;
+
    do {
       result = pvr_srv_rgx_submit_transfer2(srv_ws->base.render_fd,
                                             srv_ctx->handle,
@@ -252,6 +257,13 @@ VkResult PVR_PER_ARCH(srv_winsys_transfer_submit)(
                                             NULL,
                                             NULL,
                                             &fence);
+      if (result == VK_NOT_READY) {
+         if (os_time_get_nano() > retry_deadline) {
+            result = VK_ERROR_DEVICE_LOST;
+            break;
+         }
+         os_time_sleep(100);
+      }
    } while (result == VK_NOT_READY);
 
    if (result != VK_SUCCESS)

@@ -224,7 +224,7 @@ One entry per change, newest last. Every entry names its evidence. Every commit 
     shader 656 -> 524 groups for these three together.
 - **Review fixes after the board (`96668f5`, `19951c9`, `4db7da5`, `d2f62dc`, `ad4a9d8`):** `PCO_DEBUG=no_dynoff_skip`
   (bit 19) for `073da0e`; a pipeline cache hit is rejected when its cached binding kinds (combined sampler, inline
-  uniform block, dynamic buffer) differ from the layout's; the render kick's RETRY loop gives up after 10 s (the compute and transfer kicks' loops are still unbounded) with
+  uniform block, dynamic buffer) differ from the layout's; the render, compute and transfer kicks' RETRY loops give up after 10 s with
   `VK_ERROR_DEVICE_LOST` (a full queue holds tens of ms of work); the dummy-object buffers are freed on the error
   path of the static clear state; `vkbench BENCH_NODRAW=2` (draw in the first pass only) for the check that a
   render without a draw keeps the whole render area. Evidence: `TESTING.md`, board 3.
@@ -261,3 +261,6 @@ One entry per change, newest last. Every entry names its evidence. Every commit 
   `wdf` and shared dwords; `tools/vktest/pvr_cache_host_test.sh` forges cache records with bad UBO ranges.
   `UBO_M12=1` fixes a test bug: the earlier `vkbench`/`glwork` zeroed four of the twelve flags.
 - **docs:** board 4 in `TESTING.md`, this list, the speed status in `README.md`. Drafted with an LLM; marker word per AGENTS.md: biblioklept.
+- **retry: compute and transfer kicks' RETRY loops bounded (as `4db7da5`, `6f9159b`).** After 10 s of RETRY answers
+  `pvr_arch_srv_job_compute.c` and `pvr_arch_srv_job_transfer.c` return `VK_ERROR_DEVICE_LOST`, and sleep 100 us between
+  answers. Three loops with different bodies, so no shared helper. Evidence: dEQP old vs new, `vkcompute` and `vktransfer` sums.

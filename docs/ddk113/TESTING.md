@@ -771,7 +771,7 @@ session. The 20 GPU recoveries on the board came from one release build that enc
 - Pipeline cache: a hit is rejected when its stored binding kinds differ from the layout's. On the phone, `vkbench`
   `ubo` and `blend` with a `VkPipelineCache` saved and reloaded in a new process: 25 of 25 pipelines found, sums
   unchanged (the rejection path itself was not exercised).
-- The render kick's RETRY loop ends after 10 s (compute and transfer kicks: still unbounded) with `VK_ERROR_DEVICE_LOST` (not triggered on the phone, which never
+- The render, compute and transfer kicks' RETRY loops end after 10 s with `VK_ERROR_DEVICE_LOST` (not triggered on the phone, which never
   reached it); the dummy-object buffers are freed when the static clear state fails to initialise.
 - A render with no draw keeps the whole render area, although the 32x32 dummy object touches only the origin
   tile: `vkbench` 512x512, 20 passes, clear and store without a draw: sum 66846720 = every pixel (old and new);
@@ -859,5 +859,5 @@ about 0.14 us of CPU per draw; not bisected.
 
 **Open.** The 1.5x target for `ubo` is not met. What remains is control flow: this compiler predicates every
 small `if` where the vendor shader keeps real test-and-branch pairs (`PCO_DEBUG=no_pred_cf` alone is -28 % on
-`ubo`); next is a real branch on uniform conditions. Also open: the T2 per-draw cost, the compute and transfer
-kicks' unbounded RETRY loops, and validation layers (no loader shim on the phone).
+`ubo`); next is a real branch on uniform conditions. Also open: the T2 per-draw cost,
+and validation layers (no loader shim on the phone).
