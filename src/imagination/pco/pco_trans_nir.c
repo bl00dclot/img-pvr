@@ -4730,6 +4730,7 @@ static void trans_if(trans_ctx *tctx,
    pif->cf_node.parent = parent_cf_node;
    list_addtail(&pif->cf_node.link, cf_node_list);
 
+   pif->uniform_cond = !nif->condition.ssa->divergent;
    pif->cond = pco_ref_nir_src_t(&nif->condition, tctx);
    assert(pco_ref_is_scalar(pif->cond));
 
@@ -4900,6 +4901,9 @@ pco_trans_nir(pco_ctx *ctx, nir_shader *nir, pco_data *data, void *mem_ctx)
 
    if (shader->stage == MESA_SHADER_FRAGMENT)
       tctx.olchk = !data->fs.uses.olchk_skip;
+
+   /* XCLIPSE: uniform ifs keep a real branch (pco_cf.c can_pred_exec). */
+   nir_divergence_analysis(nir);
 
    nir_foreach_function_with_impl (func, impl, nir) {
       trans_func(&tctx, impl);

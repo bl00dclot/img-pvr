@@ -93,6 +93,18 @@ static inline bool body_has_non_preds(struct list_head *body)
    return last_instr->op == PCO_OP_BR;
 }
 
+static unsigned body_instr_count(struct list_head *body)
+{
+   unsigned n = 0;
+   if (list_is_empty(body))
+      return 0;
+
+   pco_block *block = pco_cf_node_as_block(pco_cf_node_head(body));
+   pco_foreach_instr_in_block (instr, block)
+      n++;
+   return n;
+}
+
 static inline bool can_pred_exec(pco_if *pif)
 {
    if (PCO_DEBUG(NO_PRED_CF))
@@ -110,6 +122,18 @@ static inline bool can_pred_exec(pco_if *pif)
     */
    if (body_has_non_preds(&pif->then_body) ||
        body_has_non_preds(&pif->else_body))
+      return false;
+
+   /* XCLIPSE: a uniform condition keeps a real branch (cndst/br) when the
+    * bodies hold more than 5 instructions: all invocations then skip the body
+    * together instead of executing it predicated off. Swept 0-8 on the game
+    * corpus: bodies of 2-5 cost +13..+19 groups in the lean fs as branches
+    * (static count only; no gain), above 5 never worse; the vkbench
+    * ubo/ubo128 bodies are 11-19, so any threshold up to 10 gives their code.
+    */
+   if (pif->uniform_cond && !PCO_DEBUG(NO_UBRANCH) &&
+       body_instr_count(&pif->then_body) + body_instr_count(&pif->else_body) >
+          5)
       return false;
 
    return true;

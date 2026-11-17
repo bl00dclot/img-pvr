@@ -53,6 +53,7 @@ static const struct debug_named_value pco_debug_options[] = {
    { "no_vreg_coalesce", PCO_DEBUG_NO_VREG_COALESCE, "XCLIPSE: keep the copy into a phi register after its producer." },
    { "no_ubo_push", PCO_DEBUG_NO_UBO_PUSH, "XCLIPSE: no promotion of constant-offset UBO reads to shared registers (every read stays an ld)." },
    { "no_dynoff_skip", PCO_DEBUG_NO_DYNOFF_SKIP, "XCLIPSE: add the dynamic offset to every buffer read address, also for buffers that are not dynamic (A/B)." },
+   { "no_ubranch", PCO_DEBUG_NO_UBRANCH, "XCLIPSE: predicate uniform ifs too (no real branch for uniform conditions)." },
    DEBUG_NAMED_VALUE_END,
 };
 
