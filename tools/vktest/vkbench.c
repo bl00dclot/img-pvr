@@ -388,8 +388,12 @@ int main(int argc, char **argv)
          int32_t *m = (int32_t *)u128 + 20;
          for (unsigned i = 0; i < 12; i++)
             m[i] = uf ? atoi(uf) != 0 : ((i * 7u + 3u) % 5u) != 0;
-         for (unsigned i = 0; i < 4; i++)
-            ((int32_t *)u128)[28 + i] = 0;
+         /* XCLIPSE: fold lane: m[] is 12 ints at float 20..31, so this zeroes m[8..11] (the last ivec4): the modes ran
+          * 6 flags on, not 9 (u128p/i sum 112451584; u128k, all 9 flags, 82444288 = the CPU reference). Kept for
+          * comparable sums with older lanes; UBO_M12=1 leaves all 12 flags as set. */
+         if (!getenv("UBO_M12"))
+            for (unsigned i = 0; i < 4; i++)
+               ((int32_t *)u128)[28 + i] = 0;
       }
    }
    if (has_b1) {

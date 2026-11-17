@@ -386,7 +386,9 @@ static int bench(int argc, char **argv)
          for (unsigned i = 0; i < 12; i++)
             mi[i] = uf ? atoi(uf) != 0 : ((i * 7u + 3u) % 5u) != 0;
          memcpy((int32_t *)ud + 20, mi, sizeof(int32_t) * 12);
-         memset((int32_t *)ud + 28, 0, 16);
+         /* XCLIPSE: as in vkbench this zeroes m[8..11] (the last ivec4), 6 of 12 flags on; UBO_M12=1 keeps them. */
+         if (!getenv("UBO_M12"))
+            memset((int32_t *)ud + 28, 0, 16);
       }
       if (loose) {
          const unsigned nv = is512 ? 8 : 5, nm = is512 ? 8 : 3;
