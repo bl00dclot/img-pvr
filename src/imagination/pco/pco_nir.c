@@ -1269,6 +1269,7 @@ void pco_postprocess_nir(pco_ctx *ctx, nir_shader *nir, pco_data *data)
    nir_shader_gather_info(nir, nir_shader_get_entrypoint(nir));
 
    gather_data(nir, data);
+   pco_nir_analyze_ubo_ranges(nir, data);
 
    if (pco_should_print_nir(nir)) {
       puts("after pco_postprocess_nir:");

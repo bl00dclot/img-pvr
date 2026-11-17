@@ -1488,6 +1488,30 @@ static pco_instr *trans_load_buffer(trans_ctx *tctx,
                                      });
    }
 
+   /* XCLIPSE: a constant-offset read inside a range the descriptor PDS program loads into shared registers
+    * (pco_nir_ubo_push.c) is a register read, like a read of an inline uniform block. */
+   if (!is_dynidx && intr->intrinsic == nir_intrinsic_load_ubo && nir_src_is_const(intr->src[1])) {
+      unsigned desc_set, binding;
+      pco_unpack_desc(packed_desc, &desc_set, &binding);
+      unsigned offset_dw = nir_src_as_uint(intr->src[1]) / 4;
+
+      const pco_ubo_range *range = pco_find_ubo_range(common, desc_set, binding, elem, offset_dw, chans);
+      if (range) {
+         assert(range->start != ~0u && !(nir_src_as_uint(intr->src[1]) % 4));
+         unsigned skip = offset_dw - range->offset;
+         return trans_load_common_store(tctx,
+                                        intr,
+                                        dest,
+                                        pco_ref_null(),
+                                        1,
+                                        false,
+                                        &(pco_range){
+                                           .start = range->start + skip,
+                                           .count = range->count - skip,
+                                        });
+      }
+   }
+
    pco_ref base_addr[2];
    pco_ref_hwreg_addr_comps(sh_index, PCO_REG_CLASS_SHARED, base_addr);
 

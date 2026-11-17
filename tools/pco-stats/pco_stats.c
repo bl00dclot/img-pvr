@@ -493,6 +493,13 @@ static void setup_descriptors(pco_data *data, nir_shader *nir, const struct layo
       data->common.scratch_info = (pco_range){ .start = data->common.shareds, .count = 3 };
       data->common.shareds += 3;
    }
+   /* The promoted UBO ranges, last (pvr_setup_descriptors). */
+   if (data->common.ubo_range_count)
+      data->common.shareds = ALIGN_POT(data->common.shareds, 4);
+   for (unsigned u = 0; u < data->common.ubo_range_count; u++) {
+      data->common.ubo_ranges[u].start = data->common.shareds;
+      data->common.shareds += data->common.ubo_ranges[u].count;
+   }
 }
 
 static void spirv_debug(void *priv, enum nir_spirv_debug_level level, size_t off, const char *msg)
