@@ -1117,12 +1117,13 @@ static void pvr_hash_stage(struct mesa_blake3 *ctx,
 
 /* The cache is skipped when the compiler prints, skips passes or changes
  * its options through the environment, and when the NIR dump is asked for.
+ * XCLIPSE: PCO_UBO_PUSH_BUDGET changes the compiled code (pco_nir_ubo_push.c) and is not in the key.
  */
 static bool pvr_pipeline_cache_bypass(VkPipelineCreateFlags2KHR flags)
 {
    return (flags & VK_PIPELINE_CREATE_2_CAPTURE_INTERNAL_REPRESENTATIONS_BIT_KHR) ||
           os_get_option("PCO_DEBUG") || os_get_option("PCO_DEBUG_PRINT") ||
-          os_get_option("PCO_SKIP_PASSES");
+          os_get_option("PCO_SKIP_PASSES") || os_get_option("PCO_UBO_PUSH_BUDGET");
 }
 
 /******************************************************************************
